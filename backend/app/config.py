@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -20,6 +21,23 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: str = "http://localhost:5173"
     CHUNK_SIZE: int = 800
     CHUNK_OVERLAP: int = 150
+    MIN_CHUNK_SIZE: int = 100
+
+    @model_validator(mode="after")
+    def _validate_chunking(self) -> "Settings":
+        if self.CHUNK_OVERLAP >= self.CHUNK_SIZE:
+            raise ValueError(
+                f"CHUNK_OVERLAP must be smaller than CHUNK_SIZE "
+                f"(got overlap={self.CHUNK_OVERLAP}, size={self.CHUNK_SIZE})"
+            )
+        if self.MIN_CHUNK_SIZE >= self.CHUNK_SIZE:
+            raise ValueError(
+                f"MIN_CHUNK_SIZE must be smaller than CHUNK_SIZE "
+                f"(got min={self.MIN_CHUNK_SIZE}, size={self.CHUNK_SIZE})"
+            )
+        if self.MIN_CHUNK_SIZE < 1:
+            raise ValueError("MIN_CHUNK_SIZE must be at least 1")
+        return self
 
     @property
     def allowed_origins_list(self) -> list[str]:
