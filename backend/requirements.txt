@@ -4,3 +4,5 @@ pydantic-settings
 sqlalchemy
 psycopg[binary]
 pgvector
+pymupdf
+python-multipart
