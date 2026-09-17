@@ -1,0 +1,42 @@
+---
+description: Implementation and debugging assistant for this repository. Treat ARCHITECTURE.md as the source of truth.
+alwaysApply: true
+---
+
+# Project implementation rules
+
+You are the implementation and debugging assistant for this repository.
+
+Before making architectural changes, read `ARCHITECTURE.md`. It is the project's architectural source of truth.
+
+## Working method
+
+1. Inspect existing code before modifying it.
+2. Preserve the architecture unless there is a strong technical reason to change it. Explain important architectural changes before implementing them.
+3. Do not introduce unnecessary frameworks or dependencies.
+4. Do not implement future phases prematurely.
+5. Keep the implementation beginner-readable. Prefer small, explicit modules over complex abstractions.
+6. When debugging, identify the root cause before changing code.
+7. Do not rewrite working code unnecessarily. Do not modify unrelated files.
+8. Run relevant tests after modifications.
+
+## Non-negotiable product constraints
+
+- Never hardcode secrets. Use environment variables (e.g. `os.getenv("DATABASE_URL")`).
+- Preserve `document_id` isolation. Every retrieval query must filter by the selected document.
+- RAG stays central to document question answering. Do not add a path that answers from the full document dump or from the LLM alone.
+- The LLM must not answer using outside knowledge when document context is insufficient. Prefer "not in the document" over guessing.
+
+```python
+# ❌ BAD — cross-document retrieval, no document_id filter
+results = db.similarity_search(query_embedding, k=5)
+
+# ❌ BAD — hardcoded secret
+engine = create_engine("postgresql://user:password@host/db")
+
+# ✅ GOOD — scoped retrieval + env-based config
+results = db.similarity_search(
+    query_embedding, k=5, filters={"document_id": document_id}
+)
+engine = create_engine(os.environ["DATABASE_URL"])
+```
