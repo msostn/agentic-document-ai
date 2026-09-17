@@ -6,3 +6,5 @@ psycopg[binary]
 pgvector
 pymupdf
 python-multipart
+sentence-transformers
+numpy

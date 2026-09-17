@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen3:4b"
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+    EMBEDDING_BATCH_SIZE: int = 32
+    EMBEDDING_DEVICE: str = "cpu"
     MAX_UPLOAD_SIZE_MB: int = 25
     ALLOWED_ORIGINS: str = "http://localhost:5173"
     CHUNK_SIZE: int = 800
