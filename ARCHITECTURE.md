@@ -57,27 +57,16 @@ User uploads PDF
  → Document status = "ready"
 ```
 
-### 3.2 Query flow (chat-time)
+### 3.2 Retrieval flow (search-time)
 ```
-User selects a document and sends a question
- → Backend loads short conversation history (optional, for context)
- → Backend calls the LLM (Ollama) with:
-     - system prompt (document-only grounding rules)
-     - user question
-     - tool definition: search_document(query)
- → LLM decides: does this question require document content?
-     - If yes → LLM emits a tool call: search_document(query)
-     - If the question is clearly unrelated/no tool needed → LLM may respond directly
-       (still constrained by the grounding system prompt to refuse world-knowledge answers)
- → Backend executes search_document():
-     - embed the query text
-     - vector similarity search in document_chunks
-     - WHERE document_id = <selected document> (hard filter, always applied)
-     - return top-K chunks with page_number + chunk_id + content
- → Tool result is appended to the conversation and sent back to the LLM
- → LLM generates final answer using ONLY the retrieved chunk content
- → Backend returns { answer, sources[] } to frontend
- → Frontend renders answer + expandable source chunks/pages
+User selects a document and sends a query
+ → Backend embeds the query via sentence-transformers (one embedding call)
+ → pgvector cosine similarity search in document_chunks
+     WHERE document_id = <selected document> (hard filter, always applied)
+     ORDER BY embedding <=> query_embedding
+     LIMIT top_k
+ → Returns top-K chunks with chunk_id, page_number, content, distance, similarity
+ → No answer generation — retrieved chunks only (LLM integration is a future phase)
 ```
 
 ### 3.3 Isolation guarantee
@@ -93,7 +82,7 @@ User selects a document and sends a question
 | Chunking | Split page text into overlapping chunks | Chunk size and overlap are configurable via env vars (`CHUNK_SIZE`, `CHUNK_OVERLAP`); each chunk retains its source `page_number` |
 | Embedding | Convert chunk text into a fixed-length vector | Local `sentence-transformers` model (default `all-MiniLM-L6-v2`); model is loaded once and reused, not per-request |
 | Storage | Persist chunk text + vector + metadata | PostgreSQL with `pgvector`; embedding column dimension must match the embedding model's actual output dimension |
-| Retrieval | Similarity search scoped to one document | Cosine similarity via pgvector; always filtered by `document_id`; returns top-K chunks (K configurable, default small e.g. 4–6) |
+| Retrieval | Similarity search scoped to one document | Cosine similarity via pgvector; always filtered by `document_id`; returns top-K chunks (K configurable, default 5, max 20) |
 | Grounding | Constrain generation to retrieved content | Enforced via system prompt + response validation, not just prompt suggestion |
 
 **Chunk record contract:** every stored chunk must carry `document_id`, `chunk_index`, `page_number`, `content`, and `embedding`. No chunk exists without a page number and a parent document.
@@ -191,7 +180,7 @@ Engine: PostgreSQL with the `pgvector` extension (Supabase free tier). ORM: SQLA
 | GET | `/documents/{document_id}` | Fetch metadata for one document |
 | POST | `/documents/{document_id}/ingest` | (Re-)ingest a document with optional PDF bytes and `force` flag |
 | DELETE | `/documents/{document_id}` | Remove document + its chunks |
-| POST | `/documents/{document_id}/chat` | Ask a question scoped to this document |
+| POST | `/documents/{document_id}/search` | Semantic vector retrieval (top-K chunks scoped to document) |
 
 **Chat request:**
 ```
@@ -240,7 +229,7 @@ All endpoints use Pydantic request/response schemas and return proper HTTP statu
 | 5 | Page-aware chunking with configurable size/overlap |
 | 6 | Local embedding service (load-once, reusable) |
 | 7 | Full ingestion pipeline writing chunks + embeddings to pgvector |
-| 8 | `search_document()` implemented and tested standalone (no LLM) |
+| 8 | Semantic vector retrieval (top-K cosine search scoped to document) |
 | 9 | Ollama connected; basic prompt/response verified |
 | 10 | Tool-calling agent loop implemented (LLM decides to call `search_document`) |
 | 11 | Strict grounding system prompt + refusal behavior verified |

@@ -8,8 +8,22 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.rag.exceptions import (
+    DocumentEmptyError,
+    DocumentIngestionFailedError,
+    DocumentNotFoundError,
+    DocumentNotReadyError,
+    InvalidQueryError,
+    InvalidTopKError,
+)
 from app.rag.parser import NoExtractableTextError, PDFParsingError
-from app.schemas.document import DocumentResponse
+from app.rag.retriever import retrieve_relevant_chunks
+from app.schemas.document import (
+    DocumentResponse,
+    RetrievalResultSchema,
+    SearchRequest,
+    SearchResponse,
+)
 from app.services import document_service, ingestion_service
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -125,6 +139,46 @@ def ingest_document_route(
 def list_documents(db: Session = Depends(get_db)) -> list[DocumentResponse]:
     docs = document_service.list_documents(db)
     return [DocumentResponse.model_validate(d) for d in docs]
+
+
+@router.post("/{document_id}/search", response_model=SearchResponse)
+def search_document(
+    document_id: uuid.UUID,
+    request: SearchRequest,
+    db: Session = Depends(get_db),
+) -> SearchResponse:
+    try:
+        results = retrieve_relevant_chunks(
+            db, document_id, request.query, request.top_k
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DocumentNotReadyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DocumentIngestionFailedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DocumentEmptyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InvalidQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except InvalidTopKError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    from app.config import settings
+
+    resolved_top_k = (
+        request.top_k
+        if request.top_k is not None
+        else settings.RETRIEVAL_TOP_K_DEFAULT
+    )
+
+    return SearchResponse(
+        document_id=document_id,
+        query=request.query,
+        top_k=resolved_top_k,
+        count=len(results),
+        results=[RetrievalResultSchema.model_validate(r) for r in results],
+    )
 
 
 @router.get("/{document_id}", response_model=DocumentResponse)

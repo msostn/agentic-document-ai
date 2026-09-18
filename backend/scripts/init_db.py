@@ -5,7 +5,7 @@
 Idempotent: safe to run repeatedly. ``create_all`` creates tables that do
 not exist yet; the ALTER statements below bring an existing Phase 3 database
 up to the Phase 7 schema (new documents columns + the ``empty`` status) and
-are no-ops once applied.
+are no-ops once applied. The Phase 8 HNSW index is created idempotently.
 """
 
 import sys
@@ -33,16 +33,24 @@ _PHASE7_SYNC_SQL = [
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS processed_at timestamptz",
 ]
 
+# Phase 8: HNSW index for cosine similarity retrieval on document_chunks.
+_PHASE8_INDEX_SQL = [
+    "CREATE INDEX IF NOT EXISTS ix_document_chunks_embedding_hnsw_cosine "
+    "ON document_chunks USING hnsw (embedding vector_cosine_ops)",
+]
+
 
 def main() -> None:
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
         for statement in _PHASE7_SYNC_SQL:
             conn.execute(text(statement))
+        for statement in _PHASE8_INDEX_SQL:
+            conn.execute(text(statement))
     print("Created tables: documents, document_chunks")
     print("Synced documents columns: error_message, chunk_count, processed_at")
     print("Synced documents status constraint to include 'empty'")
-    print("Deferred: cosine vector index on document_chunks.embedding (Phase 7/8)")
+    print("Created HNSW index on document_chunks.embedding (vector_cosine_ops)")
 
 
 if __name__ == "__main__":

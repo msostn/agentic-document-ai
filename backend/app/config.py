@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 800
     CHUNK_OVERLAP: int = 150
     MIN_CHUNK_SIZE: int = 100
+    RETRIEVAL_TOP_K_DEFAULT: int = 5
+    RETRIEVAL_TOP_K_MAX: int = 20
+    MAX_QUERY_LENGTH: int = 8000
 
     @model_validator(mode="after")
     def _validate_chunking(self) -> "Settings":

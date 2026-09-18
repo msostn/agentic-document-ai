@@ -1,4 +1,4 @@
-"""Pydantic schemas for document responses."""
+"""Pydantic schemas for document responses and search."""
 
 from __future__ import annotations
 
@@ -19,3 +19,26 @@ class DocumentResponse(BaseModel):
     processed_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class SearchRequest(BaseModel):
+    query: str
+    top_k: int | None = None
+
+
+class RetrievalResultSchema(BaseModel):
+    chunk_id: UUID
+    document_id: UUID
+    chunk_index: int
+    page_number: int
+    content: str
+    distance: float
+    similarity: float
+
+
+class SearchResponse(BaseModel):
+    document_id: UUID
+    query: str
+    top_k: int
+    count: int
+    results: list[RetrievalResultSchema]
