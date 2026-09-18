@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     MAX_QUERY_LENGTH: int = 8000
     RAG_CONTEXT_MAX_CHARS: int = 8000
     RAG_MIN_SIMILARITY: float = 0.30
+    AGENT_MAX_ITERATIONS: int = 3
+    AGENT_MAX_TOOL_CALLS: int = 3
 
     @model_validator(mode="after")
     def _validate_chunking(self) -> "Settings":
@@ -63,6 +65,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "OLLAMA_NUM_PREDICT must be at least 1 "
                 f"(got {self.OLLAMA_NUM_PREDICT})"
+            )
+        if self.AGENT_MAX_ITERATIONS < 1:
+            raise ValueError(
+                "AGENT_MAX_ITERATIONS must be at least 1 "
+                f"(got {self.AGENT_MAX_ITERATIONS})"
+            )
+        if self.AGENT_MAX_TOOL_CALLS < 1:
+            raise ValueError(
+                "AGENT_MAX_TOOL_CALLS must be at least 1 "
+                f"(got {self.AGENT_MAX_TOOL_CALLS})"
             )
         return self
 

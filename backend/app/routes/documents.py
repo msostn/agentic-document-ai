@@ -7,6 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
+from app.agent.loop import run_agent_loop
 from app.config import settings
 from app.database import get_db
 from app.llm.ollama_client import (
@@ -226,44 +227,33 @@ def ask_document(
     request: AskRequest,
     db: Session = Depends(get_db),
 ) -> AnswerResponse:
-    """Answer a question about a document using grounded generation.
+    """Answer a question about a document using the Phase 11 agent loop.
 
-    Calls Phase 9 for context, then Ollama for generation. Sources are
-    derived exclusively from Phase 9 chunks.
+    Runs a bounded, tool-using agent that performs mandatory initial
+    evidence retrieval, allows model-driven follow-up searches, and
+    produces a grounded answer with backend-verified sources.
     """
-    # Step 1: Build RAG context via Phase 9
-    try:
-        rag_result = build_rag_context(db, document_id=document_id, query=request.query)
-    except (
-        DocumentNotFoundError,
-        DocumentNotReadyError,
-        DocumentIngestionFailedError,
-        DocumentEmptyError,
-    ) as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except InvalidQueryError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Validate document exists and is accessible (Phase 10 compatibility)
+    doc = document_service.get_document(db, document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
 
-    # Step 2: Check Phase 9 status — only OK proceeds to generation
-    if rag_result.status != RAGContextStatus.OK:
+    # Validate query (reuse Phase 9 validation)
+    if not isinstance(request.query, str) or not request.query.strip():
         return AnswerResponse(
             document_id=document_id,
             query=request.query,
             answer=None,
             sources=[],
-            context_status=rag_result.status.value,
+            context_status=RAGContextStatus.INVALID_QUERY.value,
             model=settings.OLLAMA_MODEL,
         )
 
-    # Step 3: Build grounded prompt
-    system_prompt, user_prompt = build_prompts(
-        context_text=rag_result.context_text or "",
-        query=request.query,
-    )
-
-    # Step 4: Call Ollama
+    # Run the Phase 11 agent loop
     try:
-        answer_text = generate(system_prompt=system_prompt, user_prompt=user_prompt)
+        agent_result = run_agent_loop(
+            db, document_id=document_id, query=request.query
+        )
     except OllamaConnectionError as exc:
         raise HTTPException(
             status_code=502,
@@ -290,22 +280,24 @@ def ask_document(
             detail=f"Ollama error: {exc}",
         ) from exc
 
-    # Step 5: Construct authoritative sources from Phase 9 included chunks
+    # Map context_status for the API response
+    context_status = agent_result.context_status
+
+    # Construct sources
     sources = [
         AnswerSource(
-            chunk_id=c.chunk_id,
-            chunk_index=c.chunk_index,
-            page_number=c.page_number,
+            chunk_id=s["chunk_id"],
+            chunk_index=s["chunk_index"],
+            page_number=s["page_number"],
         )
-        for c in rag_result.chunks
-        if c.included
+        for s in agent_result.sources
     ]
 
     return AnswerResponse(
         document_id=document_id,
         query=request.query,
-        answer=answer_text,
+        answer=agent_result.answer,
         sources=sources,
-        context_status=rag_result.status.value,
+        context_status=context_status,
         model=settings.OLLAMA_MODEL,
     )
