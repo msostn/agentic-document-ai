@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen3:4b"
+    OLLAMA_TIMEOUT_SECONDS: int = 120
+    OLLAMA_TEMPERATURE: float = 0.1
+    OLLAMA_NUM_PREDICT: int = 512
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     EMBEDDING_BATCH_SIZE: int = 32
     EMBEDDING_DEVICE: str = "cpu"
@@ -50,6 +53,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"RAG_MIN_SIMILARITY must be between -1.0 and 1.0 "
                 f"(got {self.RAG_MIN_SIMILARITY})"
+            )
+        if self.OLLAMA_TIMEOUT_SECONDS < 1:
+            raise ValueError(
+                "OLLAMA_TIMEOUT_SECONDS must be at least 1 "
+                f"(got {self.OLLAMA_TIMEOUT_SECONDS})"
+            )
+        if self.OLLAMA_NUM_PREDICT < 1:
+            raise ValueError(
+                "OLLAMA_NUM_PREDICT must be at least 1 "
+                f"(got {self.OLLAMA_NUM_PREDICT})"
             )
         return self
 

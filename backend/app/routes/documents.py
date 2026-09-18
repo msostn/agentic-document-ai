@@ -7,7 +7,17 @@ import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
+from app.llm.ollama_client import (
+    OllamaConnectionError,
+    OllamaError,
+    OllamaModelUnavailableError,
+    OllamaResponseError,
+    OllamaTimeoutError,
+    generate,
+)
+from app.rag.context import build_rag_context
 from app.rag.exceptions import (
     DocumentEmptyError,
     DocumentIngestionFailedError,
@@ -17,12 +27,19 @@ from app.rag.exceptions import (
     InvalidTopKError,
 )
 from app.rag.parser import NoExtractableTextError, PDFParsingError
+from app.rag.prompt import build_prompts
 from app.rag.retriever import retrieve_relevant_chunks
 from app.schemas.document import (
     DocumentResponse,
     RetrievalResultSchema,
     SearchRequest,
     SearchResponse,
+)
+from app.schemas.rag import (
+    AnswerResponse,
+    AnswerSource,
+    AskRequest,
+    RAGContextStatus,
 )
 from app.services import document_service, ingestion_service
 
@@ -201,3 +218,94 @@ def delete_document(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found.")
     document_service.delete_document(db, doc)
+
+
+@router.post("/{document_id}/ask", response_model=AnswerResponse)
+def ask_document(
+    document_id: uuid.UUID,
+    request: AskRequest,
+    db: Session = Depends(get_db),
+) -> AnswerResponse:
+    """Answer a question about a document using grounded generation.
+
+    Calls Phase 9 for context, then Ollama for generation. Sources are
+    derived exclusively from Phase 9 chunks.
+    """
+    # Step 1: Build RAG context via Phase 9
+    try:
+        rag_result = build_rag_context(db, document_id=document_id, query=request.query)
+    except (
+        DocumentNotFoundError,
+        DocumentNotReadyError,
+        DocumentIngestionFailedError,
+        DocumentEmptyError,
+    ) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Step 2: Check Phase 9 status — only OK proceeds to generation
+    if rag_result.status != RAGContextStatus.OK:
+        return AnswerResponse(
+            document_id=document_id,
+            query=request.query,
+            answer=None,
+            sources=[],
+            context_status=rag_result.status.value,
+            model=settings.OLLAMA_MODEL,
+        )
+
+    # Step 3: Build grounded prompt
+    system_prompt, user_prompt = build_prompts(
+        context_text=rag_result.context_text or "",
+        query=request.query,
+    )
+
+    # Step 4: Call Ollama
+    try:
+        answer_text = generate(system_prompt=system_prompt, user_prompt=user_prompt)
+    except OllamaConnectionError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ollama service unavailable: {exc}",
+        ) from exc
+    except OllamaTimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Ollama generation timed out: {exc}",
+        ) from exc
+    except OllamaModelUnavailableError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc),
+        ) from exc
+    except OllamaResponseError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ollama response error: {exc}",
+        ) from exc
+    except OllamaError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ollama error: {exc}",
+        ) from exc
+
+    # Step 5: Construct authoritative sources from Phase 9 included chunks
+    sources = [
+        AnswerSource(
+            chunk_id=c.chunk_id,
+            chunk_index=c.chunk_index,
+            page_number=c.page_number,
+        )
+        for c in rag_result.chunks
+        if c.included
+    ]
+
+    return AnswerResponse(
+        document_id=document_id,
+        query=request.query,
+        answer=answer_text,
+        sources=sources,
+        context_status=rag_result.status.value,
+        model=settings.OLLAMA_MODEL,
+    )

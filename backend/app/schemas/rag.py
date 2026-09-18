@@ -48,3 +48,28 @@ class RAGContextResult(BaseModel):
     similarity_threshold_used: float
     max_chars_used: int
     top_similarity: float | None
+
+
+class AskRequest(BaseModel):
+    """Request schema for the /ask endpoint."""
+
+    query: str
+
+
+class AnswerSource(BaseModel):
+    """A single authoritative source chunk for an answer."""
+
+    chunk_id: UUID
+    chunk_index: int
+    page_number: int
+
+
+class AnswerResponse(BaseModel):
+    """Structured response from grounded answer generation (Phase 10)."""
+
+    document_id: UUID
+    query: str
+    answer: str | None
+    sources: list[AnswerSource]
+    context_status: str
+    model: str

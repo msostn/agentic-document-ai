@@ -80,6 +80,18 @@ User selects a document and sends a query
  → No answer generation — grounded context only (LLM integration is Phase 10)
 ```
 
+### 3.4 Grounded answer flow (Phase 10)
+```
+User asks a question about a document
+ → Call Phase 9 build_rag_context() (exactly once)
+ → If status != OK → return controlled no-context response (no LLM call)
+ → Build deterministic prompt (system grounding instructions + context + query)
+ → Call local Ollama via HTTP API (/api/chat, stream=false)
+ → Receive generated answer text
+ → Construct authoritative sources from Phase 9 included chunks only
+ → Return AnswerResponse (answer + sources + context_status + model)
+```
+
 ### 3.3 Isolation guarantee
 `document_id` is a mandatory filter on every retrieval query. There is no code path where `search_document()` can execute without a `document_id` bound to it. This is enforced at the query-construction level, not just by convention.
 
@@ -95,7 +107,9 @@ User selects a document and sends a query
 | Storage | Persist chunk text + vector + metadata | PostgreSQL with `pgvector`; embedding column dimension must match the embedding model's actual output dimension |
 | Retrieval | Similarity search scoped to one document | Cosine similarity via pgvector; always filtered by `document_id`; returns top-K chunks (K configurable, default 5, max 20) |
 | RAG Context | Build grounded context from retrieval results | Filters by similarity threshold, enforces character budget, produces structured `RAGContextResult` with metadata; no answer generation |
-| Grounding | Constrain generation to retrieved content | Enforced via system prompt + response validation, not just prompt suggestion |
+| Prompt Construction | Build deterministic system/user prompts | Grounding instructions + delimited document context + user query; no retrieval, no LLM calls |
+| Ollama Generation | Call local Ollama for grounded answer | HTTP API (`/api/chat`, `stream=false`); configurable model, temperature, timeout; thin provider client |
+| Grounding | Constrain generation to retrieved content | Enforced via system prompt + backend-controlled source attribution; LLM generates answer text only |
 
 **Chunk record contract:** every stored chunk must carry `document_id`, `chunk_index`, `page_number`, `content`, and `embedding`. No chunk exists without a page number and a parent document.
 
@@ -193,21 +207,28 @@ Engine: PostgreSQL with the `pgvector` extension (Supabase free tier). ORM: SQLA
 | POST | `/documents/{document_id}/ingest` | (Re-)ingest a document with optional PDF bytes and `force` flag |
 | DELETE | `/documents/{document_id}` | Remove document + its chunks |
 | POST | `/documents/{document_id}/search` | Semantic vector retrieval (top-K chunks scoped to document) |
+| POST | `/documents/{document_id}/ask` | Grounded answer generation via Phase 9 + Ollama (Phase 10) |
 
-**Chat request:**
+**Ask request:**
 ```
-{ "message": "What is the annual fee?" }
+{ "query": "What happens if I cancel this agreement?" }
 ```
 
-**Chat response:**
+**Ask response (Phase 10):**
 ```
 {
-  "answer": "The annual fee is ...",
+  "document_id": "...",
+  "query": "What happens if I cancel this agreement?",
+  "answer": "According to the document, if you cancel...",
   "sources": [
-    { "page": 12, "chunk_id": "...", "text": "..." }
-  ]
+    { "chunk_id": "...", "chunk_index": 3, "page_number": 5 }
+  ],
+  "context_status": "ok",
+  "model": "qwen3:4b"
 }
 ```
+
+When no relevant context is found, the response returns `answer: null`, empty `sources`, and the appropriate `context_status` (e.g. `below_similarity_threshold`).
 
 Empty or low-confidence retrieval must still return HTTP 200 with the fallback "not found in document" answer and an empty or minimal `sources` array — this is a normal, expected response, not an error.
 
@@ -243,7 +264,7 @@ All endpoints use Pydantic request/response schemas and return proper HTTP statu
 | 7 | Full ingestion pipeline writing chunks + embeddings to pgvector |
 | 8 | Semantic vector retrieval (top-K cosine search scoped to document) |
 | 9 | RAG context orchestration (threshold filtering, budget selection, structured context) |
-| 10 | Ollama connected; basic prompt/response verified |
+| 10 | Ollama grounded answer generation (Phase 9 context → prompt → Ollama → answer + sources) |
 | 11 | Tool-calling agent loop implemented (LLM decides to call `search_document`) |
 | 12 | Strict grounding system prompt + refusal behavior verified |
 | 13 | Agent wired into `POST /documents/{id}/chat` |
