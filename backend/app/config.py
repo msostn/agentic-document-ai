@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     RETRIEVAL_TOP_K_DEFAULT: int = 5
     RETRIEVAL_TOP_K_MAX: int = 20
     MAX_QUERY_LENGTH: int = 8000
+    RAG_CONTEXT_MAX_CHARS: int = 8000
+    RAG_MIN_SIMILARITY: float = 0.30
 
     @model_validator(mode="after")
     def _validate_chunking(self) -> "Settings":
@@ -42,6 +44,13 @@ class Settings(BaseSettings):
             )
         if self.MIN_CHUNK_SIZE < 1:
             raise ValueError("MIN_CHUNK_SIZE must be at least 1")
+        if self.RAG_CONTEXT_MAX_CHARS < 1:
+            raise ValueError("RAG_CONTEXT_MAX_CHARS must be greater than 0")
+        if self.RAG_MIN_SIMILARITY < -1.0 or self.RAG_MIN_SIMILARITY > 1.0:
+            raise ValueError(
+                f"RAG_MIN_SIMILARITY must be between -1.0 and 1.0 "
+                f"(got {self.RAG_MIN_SIMILARITY})"
+            )
         return self
 
     @property

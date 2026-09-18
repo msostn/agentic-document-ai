@@ -69,6 +69,17 @@ User selects a document and sends a query
  → No answer generation — retrieved chunks only (LLM integration is a future phase)
 ```
 
+### 3.3 RAG context flow (Phase 9)
+```
+User selects a document and sends a query
+ → Validate query (non-empty, non-whitespace)
+ → Call Phase 8 retrieval function (exactly one call)
+ → Filter by similarity threshold (RAG_MIN_SIMILARITY)
+ → Select chunks that fit within character budget (RAG_CONTEXT_MAX_CHARS)
+ → Build structured RAGContextResult with metadata and deterministic context_text
+ → No answer generation — grounded context only (LLM integration is Phase 10)
+```
+
 ### 3.3 Isolation guarantee
 `document_id` is a mandatory filter on every retrieval query. There is no code path where `search_document()` can execute without a `document_id` bound to it. This is enforced at the query-construction level, not just by convention.
 
@@ -83,6 +94,7 @@ User selects a document and sends a query
 | Embedding | Convert chunk text into a fixed-length vector | Local `sentence-transformers` model (default `all-MiniLM-L6-v2`); model is loaded once and reused, not per-request |
 | Storage | Persist chunk text + vector + metadata | PostgreSQL with `pgvector`; embedding column dimension must match the embedding model's actual output dimension |
 | Retrieval | Similarity search scoped to one document | Cosine similarity via pgvector; always filtered by `document_id`; returns top-K chunks (K configurable, default 5, max 20) |
+| RAG Context | Build grounded context from retrieval results | Filters by similarity threshold, enforces character budget, produces structured `RAGContextResult` with metadata; no answer generation |
 | Grounding | Constrain generation to retrieved content | Enforced via system prompt + response validation, not just prompt suggestion |
 
 **Chunk record contract:** every stored chunk must carry `document_id`, `chunk_index`, `page_number`, `content`, and `embedding`. No chunk exists without a page number and a parent document.
@@ -230,16 +242,17 @@ All endpoints use Pydantic request/response schemas and return proper HTTP statu
 | 6 | Local embedding service (load-once, reusable) |
 | 7 | Full ingestion pipeline writing chunks + embeddings to pgvector |
 | 8 | Semantic vector retrieval (top-K cosine search scoped to document) |
-| 9 | Ollama connected; basic prompt/response verified |
-| 10 | Tool-calling agent loop implemented (LLM decides to call `search_document`) |
-| 11 | Strict grounding system prompt + refusal behavior verified |
-| 12 | Agent wired into `POST /documents/{id}/chat` |
-| 13 | Frontend upload UI |
-| 14 | Frontend chat UI |
-| 15 | Frontend source/citation display |
-| 16 | Full test pass (see §10) |
-| 17 | Dockerfile + docker-compose for backend |
-| 18 | Deployment (frontend, backend, DB; explicit LLM hosting tradeoff documented) |
+| 9 | RAG context orchestration (threshold filtering, budget selection, structured context) |
+| 10 | Ollama connected; basic prompt/response verified |
+| 11 | Tool-calling agent loop implemented (LLM decides to call `search_document`) |
+| 12 | Strict grounding system prompt + refusal behavior verified |
+| 13 | Agent wired into `POST /documents/{id}/chat` |
+| 14 | Frontend upload UI |
+| 15 | Frontend chat UI |
+| 16 | Frontend source/citation display |
+| 17 | Full test pass (see §10) |
+| 18 | Dockerfile + docker-compose for backend |
+| 19 | Deployment (frontend, backend, DB; explicit LLM hosting tradeoff documented) |
 
 ---
 
