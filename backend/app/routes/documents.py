@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.rag.parser import NoExtractableTextError, PDFParsingError
 from app.schemas.document import DocumentResponse
-from app.services import document_service
+from app.services import document_service, ingestion_service
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -42,7 +42,7 @@ async def upload_document(
     doc = document_service.create_document(db, filename=sanitized, file_type="pdf")
 
     try:
-        document_service.finalize_document(db, doc, content)
+        ingestion_service.ingest_document(db, doc.id, content)
     except PDFParsingError as exc:
         raise HTTPException(
             status_code=422,
@@ -55,10 +55,66 @@ async def upload_document(
         ) from exc
     except Exception as exc:
         raise HTTPException(
-            status_code=422,
+            status_code=500,
             detail={
-                "message": "Text extraction failed unexpectedly.",
+                "message": "Document ingestion failed during embedding or "
+                "persistence.",
                 "document_id": str(doc.id),
+            },
+        ) from exc
+
+    return DocumentResponse.model_validate(doc)
+
+
+@router.post("/{document_id}/ingest", response_model=DocumentResponse)
+def ingest_document_route(
+    document_id: uuid.UUID,
+    file: UploadFile | None = File(None),
+    force: bool = Query(False),
+    db: Session = Depends(get_db),
+) -> DocumentResponse:
+    doc = document_service.get_document(db, document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    pdf_bytes: bytes | None = None
+    if file is not None:
+        if not file.filename or not document_service.validate_file_type(
+            file.filename, file.content_type
+        ):
+            raise HTTPException(
+                status_code=415,
+                detail="Only PDF files are supported.",
+            )
+        pdf_bytes = file.file.read()
+        if not document_service.validate_file_size(pdf_bytes):
+            limit = document_service.get_upload_limit_mb()
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds maximum size of {limit} MB.",
+            )
+
+    try:
+        ingestion_service.ingest_document(db, document_id, pdf_bytes, force=force)
+    except ingestion_service.IngestionContentUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PDFParsingError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": str(exc), "document_id": str(document_id)},
+        ) from exc
+    except NoExtractableTextError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": str(exc), "document_id": str(document_id)},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Document ingestion failed during embedding or "
+                "persistence.",
+                "document_id": str(document_id),
             },
         ) from exc
 

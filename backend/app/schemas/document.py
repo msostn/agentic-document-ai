@@ -14,5 +14,8 @@ class DocumentResponse(BaseModel):
     file_type: str
     status: str
     created_at: datetime
+    chunk_count: int | None = None
+    error_message: str | None = None
+    processed_at: datetime | None = None
 
     model_config = {"from_attributes": True}

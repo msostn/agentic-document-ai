@@ -145,7 +145,10 @@ Engine: PostgreSQL with the `pgvector` extension (Supabase free tier). ORM: SQLA
 | id | UUID / PK | |
 | filename | text | sanitized original filename |
 | file_type | text | e.g. `pdf` |
-| status | text | `processing` \| `ready` \| `failed` |
+| status | text | `processing` \| `ready` \| `failed` \| `empty` |
+| error_message | text | set when ingestion fails (nullable) |
+| chunk_count | integer | persisted chunk rows after ingestion (nullable) |
+| processed_at | timestamp | last successful ingestion (nullable) |
 | created_at | timestamp | |
 
 **`document_chunks`**
@@ -183,9 +186,10 @@ Engine: PostgreSQL with the `pgvector` extension (Supabase free tier). ORM: SQLA
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness check → `{ "status": "ok" }` |
-| POST | `/documents/upload` | Multipart PDF upload → triggers ingestion pipeline |
+| POST | `/documents/upload` | Multipart PDF upload → triggers ingestion pipeline (persists chunks + embeddings) |
 | GET | `/documents` | List all uploaded documents (id, filename, status) |
 | GET | `/documents/{document_id}` | Fetch metadata for one document |
+| POST | `/documents/{document_id}/ingest` | (Re-)ingest a document with optional PDF bytes and `force` flag |
 | DELETE | `/documents/{document_id}` | Remove document + its chunks |
 | POST | `/documents/{document_id}/chat` | Ask a question scoped to this document |
 
