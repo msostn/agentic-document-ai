@@ -8,3 +8,4 @@ pymupdf
 python-multipart
 sentence-transformers
 numpy
+httpx

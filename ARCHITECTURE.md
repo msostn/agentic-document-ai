@@ -97,18 +97,18 @@ User asks a question about a document
 
 ### 3.5 Agent architecture
 ```
-React
- ↓
-FastAPI
- ↓
-Agent  (bounded loop: decide → call tool → observe → decide/answer)
- ↓
+React/Vite  (browser)
+  ↓ HTTP/JSON
+FastAPI  (backend, CORS-enabled)
+  ↓
+Phase 11 Agent  (bounded loop: decide → call tool → observe → decide/answer)
+  ↓
 search_document tool  (server-injected document_id)
- ↓
+  ↓
 Phase 9 RAG Context  (retrieval + similarity filtering + context budgeting — unchanged authority)
- ↓
+  ↓
 Ollama  (native tool calling, qwen3:4b)
- ↓
+  ↓
 Grounded Answer + Backend-Verified Sources
 ```
 
@@ -233,6 +233,7 @@ Engine: PostgreSQL with the `pgvector` extension (Supabase free tier). ORM: SQLA
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness check → `{ "status": "ok" }` |
+| GET | `/health/ready` | Readiness check → `{ "status": "ok"|"degraded", "checks": { "database": "ok"|"unavailable", "ollama": "ok"|"unavailable" } }` |
 | POST | `/documents/upload` | Multipart PDF upload → triggers ingestion pipeline (persists chunks + embeddings) |
 | GET | `/documents` | List all uploaded documents (id, filename, status) |
 | GET | `/documents/{document_id}` | Fetch metadata for one document |
@@ -337,3 +338,35 @@ The system is considered correct when, for a given uploaded document, all of the
 - No paid LLM, embedding, database, or hosting services.
 - No admin dashboards, analytics, or settings panels.
 - No automatic re-embedding pipeline on model swap (manual/documented process only).
+
+---
+
+## 12. Phase 12 — Frontend Integration (Local-First MVP)
+
+Phase 12 adds a React/Vite/TypeScript frontend and minimal backend hardening for browser integration. **It does NOT modify the core RAG/agent logic (Phases 4–11).**
+
+### 12.1 What Phase 12 adds
+
+**Frontend:**
+- React SPA with Vite, TypeScript, and plain CSS (CSS custom properties)
+- Centralized API client (`src/api.ts`) with typed error normalization
+- Components: `UploadPanel`, `DocumentList`, `ChatPanel`, `SourcesList`, `StatusBadge`, `ErrorBanner`
+- In-memory chat history (per document, lost on refresh)
+- Frontend tests via Vitest + React Testing Library
+
+**Backend:**
+- `GET /health/ready` — checks database connectivity and Ollama reachability
+- `ENVIRONMENT` setting in config
+- `httpx` added to `requirements.txt` (was used but unlisted)
+- `allow_credentials=False` in CORS (no cookie/session auth)
+
+### 12.2 What Phase 12 does NOT change
+
+- Retrieval logic (Phase 8)
+- RAG context construction (Phase 9)
+- Ollama generation (Phase 10)
+- Agent orchestration (Phase 11)
+- Chunking or embedding
+- Grounding behavior
+- Tool schemas or system prompts
+- The `MAX_AGENT_ITERATIONS=3` and `MAX_TOOL_CALLS=3` limits

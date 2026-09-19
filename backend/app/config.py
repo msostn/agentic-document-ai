@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     EMBEDDING_BATCH_SIZE: int = 32
     EMBEDDING_DEVICE: str = "cpu"
     MAX_UPLOAD_SIZE_MB: int = 25
+    ENVIRONMENT: str = "development"
     ALLOWED_ORIGINS: str = "http://localhost:5173"
     CHUNK_SIZE: int = 800
     CHUNK_OVERLAP: int = 150
