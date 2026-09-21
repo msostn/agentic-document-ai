@@ -1,10 +1,17 @@
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.config import settings
 from app.database import engine
 from app.routes import documents
+
+logging.basicConfig(
+    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 app = FastAPI(title="Agentic Document Intelligence")
 
@@ -25,7 +32,7 @@ def health() -> dict[str, str]:
 
 
 @app.get("/health/ready")
-def health_ready() -> dict[str, object]:
+def health_ready(response: Response) -> dict[str, object]:
     checks: dict[str, str] = {}
 
     try:
@@ -48,5 +55,8 @@ def health_ready() -> dict[str, object]:
         checks["ollama"] = "unavailable"
 
     overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
+
+    if overall != "ok":
+        response.status_code = 503
 
     return {"status": overall, "checks": checks}

@@ -24,12 +24,38 @@ Phase 12 adds the React frontend and browser integration. The core RAG/agent log
 
 ## Prerequisites
 
-- Python 3.11+
-- Node.js 18+
+- Python 3.11+ (for native development)
+- Node.js 18+ (for native development)
 - [Ollama](https://ollama.com/) installed and running
 - Supabase PostgreSQL (free tier) or local PostgreSQL with pgvector
+- Docker Desktop (for Docker deployment)
 
-## Setup
+## Quick start (Docker Compose)
+
+```bash
+# 1. Clone the repo
+git clone <repository-url>
+cd agentic-document-ai
+
+# 2. Configure backend
+cd backend
+cp .env.example .env    # edit with your DATABASE_URL and set OLLAMA_BASE_URL=http://host.docker.internal:11434
+cd ..
+
+# 3. Ensure Ollama is running with the required model
+ollama pull qwen3:4b
+ollama serve
+
+# 4. Start with Docker Compose
+docker compose up --build
+```
+
+Frontend: http://localhost:5173
+Backend: http://localhost:8000
+
+For full deployment details, see [DEPLOYMENT.md](DEPLOYMENT.md).
+
+## Native development setup
 
 ### 1. Clone and configure backend
 
@@ -148,6 +174,7 @@ npm run build
 | `OLLAMA_MODEL` | `qwen3:4b` | Ollama model name |
 | `ALLOWED_ORIGINS` | `http://localhost:5173` | CORS allowed origins (comma-separated) |
 | `ENVIRONMENT` | `development` | Environment name |
+| `LOG_LEVEL` | `INFO` | Python logging level |
 
 ### Frontend (`frontend/.env`)
 

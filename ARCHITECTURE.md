@@ -370,3 +370,68 @@ Phase 12 adds a React/Vite/TypeScript frontend and minimal backend hardening for
 - Grounding behavior
 - Tool schemas or system prompts
 - The `MAX_AGENT_ITERATIONS=3` and `MAX_TOOL_CALLS=3` limits
+
+---
+
+## 13. Phase 13 — Reproducible Packaging & Deployment Readiness
+
+Phase 13 makes the project reproducible and demonstrable by someone other than the original developer. **It does NOT modify the core RAG/agent logic (Phases 4–11).**
+
+### 13.1 What Phase 13 adds
+
+**Docker Compose deployment path:**
+```
+Browser
+  ↓
+Frontend container (nginx, static build)
+  ↓
+FastAPI backend container
+  ↓
+Agent/RAG pipeline (embedded in backend)
+  ↓
+Supabase PostgreSQL + pgvector (remote)
+  ↓
+Ollama running natively on host
+```
+
+**Backend:**
+- `LOG_LEVEL` setting with configurable Python logging
+- `/health/ready` returns HTTP 503 when dependencies are unavailable (was always 200)
+- CORS remains environment-driven via `ALLOWED_ORIGINS`
+- Dockerfile (Python 3.11-slim, non-root user, uvicorn on 0.0.0.0:8000)
+
+**Frontend:**
+- Multi-stage Dockerfile (Node.js build + nginx static server)
+- `nginx.conf` with SPA routing (`try_files $uri $uri/ /index.html`)
+- `VITE_API_BASE_URL` injected as a build argument
+
+**Infrastructure:**
+- `docker-compose.yml` managing frontend and backend containers
+- `.dockerignore` files for both backend and frontend
+- `extra_hosts` for Linux Docker host compatibility
+- `DEPLOYMENT.md` with complete setup instructions
+
+### 13.2 What Phase 13 does NOT change
+
+- Retrieval logic (Phase 8)
+- RAG context construction (Phase 9)
+- Ollama generation (Phase 10)
+- Agent orchestration (Phase 11)
+- Chunking or embedding
+- Grounding behavior
+- Tool schemas or system prompts
+- The `MAX_AGENT_ITERATIONS=3` and `MAX_TOOL_CALLS=3` limits
+- Native development workflow (still works unchanged)
+
+### 13.3 Deployment model
+
+- **Docker Compose** manages: frontend container, backend container
+- **Docker Compose does NOT manage**: Supabase PostgreSQL, Ollama
+- **Ollama** remains a native host dependency (reached via `host.docker.internal:11434` in Docker)
+- **Supabase** remains a remote hosted service (reached via `DATABASE_URL`)
+
+### 13.4 Known limitations
+
+- No authentication, no user ownership, no rate limiting
+- Not intended for public internet exposure
+- Docker Compose does not provide Ollama; it must be installed separately

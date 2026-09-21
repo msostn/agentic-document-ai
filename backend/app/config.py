@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 25
     ENVIRONMENT: str = "development"
     ALLOWED_ORIGINS: str = "http://localhost:5173"
+    LOG_LEVEL: str = "INFO"
     CHUNK_SIZE: int = 800
     CHUNK_OVERLAP: int = 150
     MIN_CHUNK_SIZE: int = 100
