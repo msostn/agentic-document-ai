@@ -435,3 +435,194 @@ Ollama running natively on host
 - No authentication, no user ownership, no rate limiting
 - Not intended for public internet exposure
 - Docker Compose does not provide Ollama; it must be installed separately
+
+---
+
+## 14. Phase 14 — RAG Evaluation & Observability Layer
+
+Phase 14 adds offline RAG evaluation, structured runtime logging, request
+correlation IDs, per-stage latency instrumentation, and in-memory runtime
+metrics to the system.
+
+### 14.1 Observability
+
+**Request correlation IDs**
+
+Every incoming request receives a unique correlation ID generated via
+`uuid.uuid4()`. The ID is exposed to clients through the
+`X-Request-ID` HTTP response header. Internally, the ID is stored in a
+`contextvars.ContextVar` (`backend/app/timing.py`), so it is inherited by the
+worker thread FastAPI uses for sync route handlers. A plain
+`threading.local()` would give each thread its own ID and break correlation
+between the response header and the stage log lines.
+
+The middleware `add_request_correlation_id` in `backend/app/main.py` injects
+the ID at the start of each request and clears it at the end.
+
+**Per-stage latency instrumentation**
+
+The query/answer path is instrumented with high-resolution timing using
+`time.perf_counter()`. The following stages are tracked separately:
+
+- **retrieval_ms**: Total time for all retrieval/tool-search operations
+  (mandatory first search + any follow-up `search_document` tool calls
+  performed by the Phase 11 agent loop).
+- **context_building_ms**: Time spent building the RAG context (Phase 9).
+- **generation_ms**: Cumulative time spent in Ollama chat calls (both
+  initial generation and any tool-call-mediated follow-ups).
+- **total_ms**: Sum of all stage durations for the complete request.
+
+Timing is recorded in the `AgentState` dataclass (`backend/app/agent/loop.py`)
+and logged at the end of each `/ask` request. No raw Ollama response objects,
+chain-of-thought content, full prompts, or full document/question/answer text
+is ever logged — only safe metadata such as `request_id`, `document_id`,
+`stage`, `duration_ms`, `outcome`, and `error_category`.
+
+**Logging**
+
+A structured logging helper `log_query_event()` (`backend/app/timing.py`)
+ensures that no sensitive content (question text, answer text, document text,
+chunk text, reasoning) appears in log output. Only the following metadata is
+logged:
+
+- `request_id`
+- `document_id` (if appropriate — scoped to the request)
+- `stage` (retrieval, context_building, generation, total)
+- `duration_ms`
+- `outcome` (success, failure, no_evidence, error)
+- `error_category` (retrieval_error, generation_timeout, etc.)
+
+All other log output uses the project's existing Python logging
+configuration (`backend/app/main.py`). The root handler uses
+`KeyValueFormatter` (`backend/app/timing.py`), which appends the structured
+extras as `key=value` pairs after the standard
+`%(asctime)s %(levelname)s %(name)s: %(message)s` prefix, so a stage line
+reads like:
+
+```
+2026-09-29 00:37:32,354 INFO app.routes.documents: query_event document_id=... duration_ms=24787.07 request_id=d89c5628-... stage=retrieval outcome=success
+```
+
+Setting `ENABLE_REQUEST_LOGGING=false` silences the informational per-stage
+and per-request lines; warnings and errors are always emitted.
+
+### 14.2 Runtime metrics
+
+**Process-local metrics accumulator**
+
+An in-memory, process-local metrics accumulator tracks aggregate operational
+numbers. No Redis, Prometheus, Grafana, or external infrastructure is used.
+
+**Supported metrics:**
+
+- `uptime_seconds`: Process uptime since startup.
+- `total_requests`: Total number of requests processed (including errors).
+- `total_errors`: Total number of requests that resulted in an error
+  (HTTP status >= 400).
+- `total_retrieval_ms`: Aggregate cumulative retrieval latency across all requests.
+- `total_context_building_ms`: Aggregate cumulative context-building latency.
+- `total_generation_ms`: Aggregate cumulative generation latency.
+- `total_request_ms`: Aggregate cumulative total request latency.
+- `average_latency_ms`: Average total request latency per request.
+- `average_retrieval_ms`: Average retrieval latency per request.
+- `average_context_building_ms`: Average context-building latency per request.
+- `average_generation_ms`: Average generation latency per request.
+
+**Zero-request state**
+
+If no requests have been recorded, all counter/duration fields default to
+0.0 / 0. The `ENABLE_METRICS_ENDPOINT` configuration flag controls whether
+the `/metrics/runtime` endpoint is active (default: `true`).
+
+**`/metrics/runtime` endpoint**
+
+A read-only `GET /metrics/runtime` endpoint returns the current metrics
+snapshot as JSON. The response contains only aggregate operational numbers;
+
+no document content, chunk text, questions, answers, source metadata, or
+chunk IDs are exposed.
+
+The endpoint returns HTTP 503 when `ENABLE_METRICS_ENDPOINT` is `false`.
+
+Configuration: add `ENABLE_METRICS_ENDPOINT=true` (or `false`) to
+`backend/.env`. The default in `backend/app/timing.py` is `true`.
+
+### 14.3 Evaluation harness
+
+**`backend/evaluate.py`**
+
+A deterministic offline RAG evaluation framework that operates as a
+black-box HTTP client:
+
+- Loads/validates a golden dataset of evaluation cases.
+- Sends HTTP requests to the real `/ask` API endpoint.
+- Scores retrieval hit-rate (whether retrieval found the correct document).
+- Scores citation validity (whether all returned sources belong to the
+  queried document — a security-relevant check).
+- Scores correct rejection (whether unanswerable questions are properly
+  refused).
+- Optionally calculates a keyword heuristic (explicitly labeled as a weak
+  metric, not a strong quality indicator).
+- Generates a human-readable report with per-case results.
+- Handles API/backend/Ollama failures clearly, with descriptive error
+  messages.
+- Returns a non-zero exit code when the backend/Ollama is unavailable.
+
+The golden dataset is embedded in the script (`GOLDEN_DATASET`) and also
+loadable from an external JSON file via `--dataset <path>` (defaults to the
+files in `EVAL_GOLDEN_SET_DIR`). A sample dataset lives at
+`eval/golden_sets/sample_insurance_policy.json`.
+
+Each run writes both a Markdown and a JSON report to `EVAL_REPORT_DIR`
+(default `eval/reports/`), named `<timestamp>_<document_alias>.md|.json`.
+
+**Sample document generator**
+
+`backend/scripts/create_phase14_sample_document.py` uploads a small fully
+synthetic insurance-policy PDF through `POST /documents/upload` (filename
+`phase14_sample_insurance_policy.pdf`), which is the document the sample
+golden dataset targets.
+
+### 14.4 Cross-document data-isolation regression test
+
+**`backend/tests/test_cross_document_isolation.py`**
+
+A security-relevant regression test that demonstrates a question scoped to
+Document A cannot return Document B's chunks/sources, even where semantic
+content overlaps (e.g., both documents contain a "cancellation policy"
+clause).
+
+The test uses the real API (`POST /documents/{id}/ask`) and verifies:
+
+- Doc A questions only return Doc A–scoped sources (or no sources).
+- Doc B questions only return Doc B–scoped sources (or no sources).
+- Overlapping content does not cause cross-document leakage.
+- The `/search` endpoint also respects `document_id` filtering.
+
+This test enforces the isolation guarantee defined in
+`ARCHITECTURE.md§121`: "document_id is a mandatory filter on every
+retrieval query. There is no code path where search_document() can execute
+without a document_id bound to it."
+
+### 14.5 Configuration
+
+New environment variables (all read from `backend/.env`, defaults are
+identical when unset):
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENABLE_METRICS_ENDPOINT` | `true` | Enable/disable the `/metrics/runtime` endpoint (disabled ⇒ HTTP 503) |
+| `ENABLE_REQUEST_LOGGING` | `true` | Emit informational per-stage / per-request `query_event` lines (warnings and errors always log) |
+| `EVAL_GOLDEN_SET_DIR` | `../eval/golden_sets` | Directory `evaluate.py` reads golden datasets from |
+| `EVAL_REPORT_DIR` | `../eval/reports` | Directory `evaluate.py` writes Markdown/JSON reports to |
+
+### 14.6 Phase 14 limits
+
+- Metrics are in-process and in-memory: they reset on restart, are per
+  process, and are a dev/ops aid — not a monitoring system.
+- No new database tables, services, or volumes were introduced; the Docker
+  Compose stack is unchanged apart from the new endpoint being available.
+- No frontend changes.
+- Evaluation is offline and manual; nothing runs automatically per request,
+  and nothing is gated on eval scores.
+

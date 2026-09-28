@@ -130,6 +130,50 @@ Open http://localhost:5173.
 | POST | `/documents/{id}/search` | Semantic vector search |
 | POST | `/documents/{id}/ask` | Ask a question (agent loop) |
 | DELETE | `/documents/{id}` | Delete a document |
+| GET | `/metrics/runtime` | Aggregate runtime metrics (in-memory, dev/ops aid) |
+
+## Observability & Evaluation (Phase 14)
+
+**Request correlation ID** — every response carries an `X-Request-ID` header.
+The same ID appears in that request's log lines, so a response can be traced
+through retrieval, context building, and generation.
+
+**Structured logs** — each `/ask` request logs one line per stage plus one
+summary line at completion, as `key=value` pairs after the standard prefix:
+
+```
+2026-09-29 00:37:32 INFO app.routes.documents: query_event document_id=... request_id=... stage=retrieval duration_ms=... outcome=success
+2026-09-29 00:37:32 INFO app.main: query_event request_id=... stage=total duration_ms=... outcome=success
+```
+
+Only safe metadata is logged — never the question, the answer, document or
+chunk text, or model reasoning. Set `ENABLE_REQUEST_LOGGING=false` to silence
+the informational lines (warnings/errors still log).
+
+**Runtime metrics** — `GET /metrics/runtime` returns uptime, request/error
+counters, and per-stage totals/averages as JSON. Counters are process-local
+and reset on restart; there is no persistent monitoring. Disable the endpoint
+with `ENABLE_METRICS_ENDPOINT=false` (returns HTTP 503).
+
+**Offline evaluation** — `backend/evaluate.py` is a black-box HTTP client that
+scores a golden dataset against the running backend:
+
+```bash
+cd backend
+python evaluate.py                      # uses EVAL_GOLDEN_SET_DIR
+python evaluate.py --base-url http://localhost:8000
+```
+
+It reports retrieval hit-rate, citation validity (every returned `chunk_id`
+belongs to the queried document), correct-rejection rate, and an explicitly
+weak keyword heuristic. Markdown and JSON reports are written to
+`eval/reports/`. A sample dataset for the synthetic insurance-policy PDF is at
+`eval/golden_sets/sample_insurance_policy.json` (create the document with
+`python scripts/create_phase14_sample_document.py`).
+
+**Cross-document isolation test** —
+`backend/tests/test_cross_document_isolation.py` proves a question scoped to
+one document can never return another document's chunks.
 
 ## Testing
 
@@ -137,7 +181,19 @@ Open http://localhost:5173.
 
 ```bash
 cd backend
+
+# Per-phase regression scripts (each prints its own pass/fail summary)
 python scripts/test_phase12_frontend_integration.py
+
+# Phase 14 test suite (unit tests + cross-document isolation)
+python -m pytest tests
+```
+
+### Evaluation
+
+```bash
+cd backend
+python evaluate.py
 ```
 
 ### Frontend tests
@@ -162,6 +218,13 @@ npm run build
 - **Local-first only**: Ollama must be running locally. The backend connects to `localhost:11434`.
 - **No streaming**: Answers appear after the full agent loop completes.
 - **Chat history is in-memory**: Lost on page refresh or document switch.
+- **Metrics are ephemeral**: `/metrics/runtime` counters live in one process
+  and reset on restart; they are not a substitute for real monitoring.
+- **Generation token budget**: `OLLAMA_NUM_PREDICT` defaults to 2048. It must
+  stay high enough for reasoning-heavy models (such as `qwen3:4b`) to finish
+  thinking *and* produce answer text — at 512 the budget was exhausted during
+  reasoning (`done_reason=length`, empty `content`) and `/ask` fell back to
+  "I couldn't find enough information...".
 
 ## Environment Variables
 
@@ -175,6 +238,10 @@ npm run build
 | `ALLOWED_ORIGINS` | `http://localhost:5173` | CORS allowed origins (comma-separated) |
 | `ENVIRONMENT` | `development` | Environment name |
 | `LOG_LEVEL` | `INFO` | Python logging level |
+| `ENABLE_METRICS_ENDPOINT` | `true` | Serve `GET /metrics/runtime` |
+| `ENABLE_REQUEST_LOGGING` | `true` | Emit per-stage/request `query_event` log lines |
+| `EVAL_GOLDEN_SET_DIR` | `../eval/golden_sets` | Golden datasets read by `evaluate.py` |
+| `EVAL_REPORT_DIR` | `../eval/reports` | Reports written by `evaluate.py` |
 
 ### Frontend (`frontend/.env`)
 

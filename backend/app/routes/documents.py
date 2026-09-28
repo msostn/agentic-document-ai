@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
@@ -10,6 +11,12 @@ from sqlalchemy.orm import Session
 from app.agent.loop import run_agent_loop
 from app.config import settings
 from app.database import get_db
+from app.timing import (
+    add_stage_metrics,
+    get_request_id,
+    log_query_event,
+    pop_context_building_ms,
+)
 from app.llm.ollama_client import (
     OllamaConnectionError,
     OllamaError,
@@ -45,6 +52,8 @@ from app.schemas.rag import (
 from app.services import document_service, ingestion_service
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("/upload", response_model=DocumentResponse, status_code=201)
@@ -240,6 +249,15 @@ def ask_document(
 
     # Validate query (reuse Phase 9 validation)
     if not isinstance(request.query, str) or not request.query.strip():
+        log_query_event(
+            logger,
+            level=logging.INFO,
+            request_id=get_request_id(),
+            document_id=str(document_id),
+            stage="invalid_query",
+            outcome="rejected",
+            error_category="invalid_query",
+        )
         return AnswerResponse(
             document_id=document_id,
             query=request.query,
@@ -255,33 +273,121 @@ def ask_document(
             db, document_id=document_id, query=request.query
         )
     except OllamaConnectionError as exc:
+        log_query_event(
+            logger,
+            level=logging.ERROR,
+            request_id=get_request_id(),
+            document_id=str(document_id),
+            stage="generation",
+            outcome="error",
+            error_category="ollama_connection",
+        )
         raise HTTPException(
             status_code=502,
             detail=f"Ollama service unavailable: {exc}",
         ) from exc
     except OllamaTimeoutError as exc:
+        log_query_event(
+            logger,
+            level=logging.ERROR,
+            request_id=get_request_id(),
+            document_id=str(document_id),
+            stage="generation",
+            outcome="error",
+            error_category="ollama_timeout",
+        )
         raise HTTPException(
             status_code=504,
             detail=f"Ollama generation timed out: {exc}",
         ) from exc
     except OllamaModelUnavailableError as exc:
+        log_query_event(
+            logger,
+            level=logging.ERROR,
+            request_id=get_request_id(),
+            document_id=str(document_id),
+            stage="generation",
+            outcome="error",
+            error_category="ollama_model_unavailable",
+        )
         raise HTTPException(
             status_code=502,
             detail=str(exc),
         ) from exc
     except OllamaResponseError as exc:
+        log_query_event(
+            logger,
+            level=logging.ERROR,
+            request_id=get_request_id(),
+            document_id=str(document_id),
+            stage="generation",
+            outcome="error",
+            error_category="ollama_response",
+        )
         raise HTTPException(
             status_code=502,
             detail=f"Ollama response error: {exc}",
         ) from exc
     except OllamaError as exc:
+        log_query_event(
+            logger,
+            level=logging.ERROR,
+            request_id=get_request_id(),
+            document_id=str(document_id),
+            stage="generation",
+            outcome="error",
+            error_category="ollama_error",
+        )
         raise HTTPException(
             status_code=502,
             detail=f"Ollama error: {exc}",
         ) from exc
 
-    # Map context_status for the API response
-    context_status = agent_result.context_status
+    # Per-stage timing (safe metadata only, no content leakage).
+    # retrieval_ms is the wall time of the agent's search tool calls;
+    # the context-assembly portion measured inside build_rag_context is
+    # subtracted so the two stage metrics do not overlap.
+    context_building_ms = pop_context_building_ms()
+    retrieval_ms = max(0.0, agent_result.retrieval_ms - context_building_ms)
+    generation_ms = agent_result.generation_ms
+    stage_outcome = "success" if agent_result.saw_ok_status else "no_evidence"
+
+    add_stage_metrics(
+        retrieval_ms=retrieval_ms,
+        context_building_ms=context_building_ms,
+        generation_ms=generation_ms,
+    )
+
+    log_query_event(
+        logger,
+        level=logging.INFO,
+        request_id=get_request_id(),
+        document_id=str(document_id),
+        stage="retrieval",
+        duration_ms=retrieval_ms,
+        outcome=stage_outcome,
+        error_category=None,
+    )
+    log_query_event(
+        logger,
+        level=logging.INFO,
+        request_id=get_request_id(),
+        document_id=str(document_id),
+        stage="context_building",
+        duration_ms=context_building_ms,
+        outcome=stage_outcome,
+        error_category=None,
+    )
+    log_query_event(
+        logger,
+        level=logging.INFO,
+        request_id=get_request_id(),
+        document_id=str(document_id),
+        stage="generation",
+        duration_ms=generation_ms,
+        outcome=stage_outcome,
+        error_category=None,
+    )
 
     # Construct sources
     sources = [
@@ -298,6 +404,6 @@ def ask_document(
         query=request.query,
         answer=agent_result.answer,
         sources=sources,
-        context_status=context_status,
+        context_status=agent_result.context_status,
         model=settings.OLLAMA_MODEL,
     )

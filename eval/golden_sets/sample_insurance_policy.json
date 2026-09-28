@@ -1,0 +1,76 @@
+{
+  "document_alias": "sample_insurance_policy",
+  "document_id": "phase14_sample_insurance_policy.pdf",
+  "notes": "Synthetic sample document created by backend/scripts/create_phase14_sample_document.py. document_id is the document filename, which evaluate.py resolves to a real UUID through GET /documents.",
+  "cases": [
+    {
+      "id": "case-001",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "What is the hospitalization deductible?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["500", "deductible"],
+      "description": "Direct fact from Section 1"
+    },
+    {
+      "id": "case-002",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "How much notice does the policyholder have to give to cancel the policy?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["30", "days"],
+      "description": "Cancellation notice period from Section 4"
+    },
+    {
+      "id": "case-003",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "What is the maximum annual coverage limit?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["1,000,000"],
+      "description": "Coverage limit from Section 2"
+    },
+    {
+      "id": "case-004",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "Within how many days must a claim be filed?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["90"],
+      "description": "Claim filing deadline from Section 5"
+    },
+    {
+      "id": "case-005",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "Is there a waiting period for pre-existing conditions?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["30"],
+      "description": "Waiting period from Section 3"
+    },
+    {
+      "id": "case-006",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "What is the weather forecast for tomorrow?",
+      "expected_answerable": false,
+      "expected_has_answer": false,
+      "description": "Out-of-scope question, must be rejected"
+    },
+    {
+      "id": "case-007",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "Who won the 2022 FIFA World Cup final?",
+      "expected_answerable": false,
+      "expected_has_answer": false,
+      "description": "General knowledge question, must be rejected"
+    },
+    {
+      "id": "case-008",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "",
+      "expected_answerable": false,
+      "expected_has_answer": false,
+      "description": "Empty query, must be rejected as invalid"
+    }
+  ]
+}

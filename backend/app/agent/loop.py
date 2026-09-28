@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 
@@ -60,6 +61,9 @@ class AgentState:
     saw_ok_status: bool = False
     last_non_ok_status: str | None = None
     iteration_limit_reached: bool = False
+    retrieval_ms: float = 0.0
+    context_building_ms: float = 0.0
+    generation_ms: float = 0.0
 
 
 @dataclass
@@ -70,6 +74,9 @@ class AgentResult:
     sources: list[dict]
     context_status: str
     saw_ok_status: bool
+    retrieval_ms: float = 0.0
+    context_building_ms: float = 0.0
+    generation_ms: float = 0.0
 
 
 def _build_tool_result_message(tool_result_json: str) -> dict:
@@ -140,33 +147,37 @@ def _validate_and_finalize(state: AgentState) -> AgentResult:
     sources = _aggregate_sources(state.collected_chunks) if state.saw_ok_status else []
 
     if not state.saw_ok_status:
-        return AgentResult(
+        result = AgentResult(
             answer=NO_EVIDENCE_MESSAGE,
             sources=[],
             context_status=state.last_non_ok_status or "no_evidence",
             saw_ok_status=False,
         )
-
-    if state.iteration_limit_reached:
-        return AgentResult(
+    elif state.iteration_limit_reached:
+        result = AgentResult(
             answer=NO_EVIDENCE_MESSAGE,
             sources=sources,
             context_status="ok",
             saw_ok_status=True,
         )
+    else:
+        last_msg = state.messages[-1] if state.messages else {}
+        answer_text = last_msg.get("content", "").strip()
 
-    last_msg = state.messages[-1] if state.messages else {}
-    answer_text = last_msg.get("content", "").strip()
+        if not answer_text:
+            answer_text = NO_EVIDENCE_MESSAGE
 
-    if not answer_text:
-        answer_text = NO_EVIDENCE_MESSAGE
+        result = AgentResult(
+            answer=answer_text,
+            sources=sources,
+            context_status="ok",
+            saw_ok_status=True,
+        )
 
-    return AgentResult(
-        answer=answer_text,
-        sources=sources,
-        context_status="ok",
-        saw_ok_status=True,
-    )
+    result.retrieval_ms = state.retrieval_ms
+    result.context_building_ms = state.context_building_ms
+    result.generation_ms = state.generation_ms
+    return result
 
 
 def _get_last_status_from_chunks(collected_chunks: list[dict]) -> str | None:
@@ -194,6 +205,16 @@ def _record_search_result(
         state.saw_ok_status = True
     else:
         state.last_non_ok_status = status
+
+
+def _measure_retrieval_time(agent_start: float) -> float:
+    """Measure retrieval time from agent start.
+
+    Retrieval includes the mandatory first search and any follow-up
+    search_document tool calls performed by the agent loop.
+    Returns elapsed milliseconds.
+    """
+    return (time.perf_counter() - agent_start) * 1000.0
 
 
 def run_agent_loop(
@@ -227,6 +248,9 @@ def run_agent_loop(
         query=query,
     )
 
+    retrieval_start = time.perf_counter()
+    generation_start = time.perf_counter()
+
     system_prompt = build_agent_system_prompt()
     state.messages.append({"role": "system", "content": system_prompt})
     state.messages.append({"role": "user", "content": query})
@@ -238,6 +262,7 @@ def run_agent_loop(
         )
     except Exception as exc:
         logger.exception("Agent mandatory first search failed")
+        state.retrieval_ms = (time.perf_counter() - retrieval_start) * 1000.0
         raise
 
     # Parse status from tool result
@@ -250,10 +275,12 @@ def run_agent_loop(
     state.tool_call_count += 1
     _record_search_result(state, tool_result_json, included_meta, first_status)
 
+    state.retrieval_ms = _measure_retrieval_time(retrieval_start)
     state.messages.append(_build_tool_result_message(tool_result_json))
 
     # --- Step 1b: Early termination if no evidence from mandatory search ---
     if first_status != "ok":
+        state.generation_ms = (time.perf_counter() - generation_start) * 1000.0
         return _validate_and_finalize(state)
 
     # --- Step 2: Agent loop (only entered when mandatory search found evidence) ---
@@ -356,12 +383,15 @@ def run_agent_loop(
                     state, tool_result_json, included_meta, search_status
                 )
 
+                state.retrieval_ms = _measure_retrieval_time(retrieval_start)
+
                 state.messages.append(
                     _build_tool_result_message(tool_result_json)
                 )
 
         else:
             # Model produced a final answer (no tool calls)
+            state.generation_ms = (time.perf_counter() - generation_start) * 1000.0
             state.messages.append(
                 _build_assistant_text_response(response.message.content or "")
             )
@@ -375,5 +405,6 @@ def run_agent_loop(
         state.iteration_count,
         state.tool_call_count,
     )
+    state.generation_ms = (time.perf_counter() - generation_start) * 1000.0
 
     return _validate_and_finalize(state)

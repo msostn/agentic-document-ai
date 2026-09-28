@@ -8,6 +8,7 @@ re-embedding, no LLM calls.
 
 from __future__ import annotations
 
+import time
 import uuid
 
 from sqlalchemy.orm import Session
@@ -26,6 +27,7 @@ from app.schemas.rag import (
     RAGContextResult,
     RAGContextStatus,
 )
+from app.timing import add_context_building_ms
 
 
 def _validate_query(query: str) -> str:
@@ -174,6 +176,31 @@ def build_rag_context(
             max_chars_used=effective_max_chars,
             top_similarity=None,
         )
+
+    # Steps 2-5: context assembly (similarity filtering, budgeting,
+    # formatting). This is the "context building" stage of the query path.
+    build_start = time.perf_counter()
+    try:
+        return _build_context_result(
+            document_id=document_id,
+            query=query,
+            retrieval_results=retrieval_results,
+            effective_threshold=effective_threshold,
+            effective_max_chars=effective_max_chars,
+        )
+    finally:
+        add_context_building_ms((time.perf_counter() - build_start) * 1000.0)
+
+
+def _build_context_result(
+    *,
+    document_id: uuid.UUID,
+    query: str,
+    retrieval_results: list,
+    effective_threshold: float,
+    effective_max_chars: int,
+) -> RAGContextResult:
+    """Assemble the RAG context from retrieval results (Phase 9 steps 2-5)."""
 
     # Step 2: check zero chunks
     total_retrieved = len(retrieval_results)

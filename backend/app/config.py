@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "qwen3:4b"
     OLLAMA_TIMEOUT_SECONDS: int = 120
     OLLAMA_TEMPERATURE: float = 0.1
-    OLLAMA_NUM_PREDICT: int = 512
+    OLLAMA_NUM_PREDICT: int = 2048
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     EMBEDDING_BATCH_SIZE: int = 32
     EMBEDDING_DEVICE: str = "cpu"
@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     RAG_MIN_SIMILARITY: float = 0.30
     AGENT_MAX_ITERATIONS: int = 3
     AGENT_MAX_TOOL_CALLS: int = 3
+    # Phase 14 — observability / evaluation
+    ENABLE_METRICS_ENDPOINT: bool = True
+    ENABLE_REQUEST_LOGGING: bool = True
+    EVAL_GOLDEN_SET_DIR: str = str(BACKEND_DIR.parent / "eval" / "golden_sets")
+    EVAL_REPORT_DIR: str = str(BACKEND_DIR.parent / "eval" / "reports")
 
     @model_validator(mode="after")
     def _validate_chunking(self) -> "Settings":

@@ -35,6 +35,8 @@ class RetrievalResultSchema(BaseModel):
     distance: float
     similarity: float
 
+    model_config = {"from_attributes": True}
+
 
 class SearchResponse(BaseModel):
     document_id: UUID

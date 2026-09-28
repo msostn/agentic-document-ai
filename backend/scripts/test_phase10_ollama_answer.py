@@ -991,7 +991,7 @@ def test_36_config_defaults_correct() -> None:
         and settings.OLLAMA_MODEL == "qwen3:4b"
         and settings.OLLAMA_TIMEOUT_SECONDS == 120
         and settings.OLLAMA_TEMPERATURE == 0.1
-        and settings.OLLAMA_NUM_PREDICT == 512
+        and settings.OLLAMA_NUM_PREDICT == 2048
     )
     record(
         "TEST 36 - Config defaults match specification",
