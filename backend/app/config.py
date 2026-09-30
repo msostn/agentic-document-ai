@@ -26,8 +26,8 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     ALLOWED_ORIGINS: str = "http://localhost:5173"
     LOG_LEVEL: str = "INFO"
-    CHUNK_SIZE: int = 800
-    CHUNK_OVERLAP: int = 150
+    CHUNK_SIZE: int = 500
+    CHUNK_OVERLAP: int = 100
     MIN_CHUNK_SIZE: int = 100
     RETRIEVAL_TOP_K_DEFAULT: int = 5
     RETRIEVAL_TOP_K_MAX: int = 20

@@ -626,3 +626,108 @@ identical when unset):
 - Evaluation is offline and manual; nothing runs automatically per request,
   and nothing is gated on eval scores.
 
+
+---
+
+## 15. Phase 15 - Retrieval Quality Improvement
+
+### 15.1 Why Phase 15 exists
+
+Phase 14's evaluation harness scored the sample insurance policy at
+**retrieval hit-rate 80.0% (7/8 cases passing)**. The single failure was
+`case-005` - *"Is there a waiting period for pre-existing conditions?"* -
+which returned `context_status=below_similarity_threshold`, `sources=[]`,
+`answer=null` instead of the Section 3 answer.
+
+### 15.2 Diagnosis (evidence, not guesswork)
+
+Measured against the live model (`all-MiniLM-L6-v2`) and the live document:
+
+| Measurement | Value |
+|---|---|
+| Phase 14 chunking (`CHUNK_SIZE=800`, `CHUNK_OVERLAP=150`) → chunks for the sample policy | 2 (both page 1) |
+| Chunk 0 (contains Section 3) similarity to case-005 | **0.2338** |
+| Chunk 1 similarity to case-005 | 0.2679 |
+| `RAG_MIN_SIMILARITY` | 0.30 |
+| Section 3 text alone vs case-005 | **0.6494** |
+| Chunk 0 vs chunk 1 (near-duplicates from the 150-char overlap) | 0.8192 |
+| Stored chunk embeddings vs freshly computed embeddings | cosine **1.000000** |
+| Case-004's best chunk (already passing) | 0.2991 - only 0.0009 above the bar |
+
+Conclusion: the query text and the source text match well in isolation
+(0.6494), but embedding a whole multi-section page into one vector drags the
+answer-bearing chunk below the threshold. The cause is **chunk-level
+embedding dilution from oversized chunks**, not an embedding-model mismatch
+(re-embedding reproduced the stored vectors exactly), not a pgvector metric
+problem (HNSW cosine index, unchanged), and not threshold arithmetic (the
+same threshold accepted every other case, barely).
+
+### 15.3 The change
+
+| Variable | Phase 14 | Phase 15 |
+|---|---|---|
+| `CHUNK_SIZE` | 800 | **500** |
+| `CHUNK_OVERLAP` | 150 | **100** |
+| `RAG_MIN_SIMILARITY` | 0.30 | 0.30 (unchanged) |
+| `RETRIEVAL_TOP_K_DEFAULT` / `_MAX` | 5 / 20 | 5 / 20 (unchanged) |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | unchanged |
+
+Smaller, more topical chunks raise the answer-bearing chunk's similarity
+without weakening the global rejection bar. Lowering the threshold was
+explicitly rejected: it would raise recall by weakening precision for every
+query, and the unanswerable controls only score 0.03-0.17, so a lower bar
+buys nothing for them while admitting near-miss distractors.
+
+The sample policy now splits into 4 chunks (494/496/490/128 chars). Measured
+effect on the sample document:
+
+| Query | Before | After |
+|---|---|---|
+| case-005 (pre-existing waiting period) | 0.2679 | **0.4770** |
+| case-004 (claim filing deadline) | 0.2991 | **0.5424** |
+| case-005 paraphrase (case-015) | n/a | 0.6490 |
+| case-006 (weather) - must stay rejected | 0.0590 | 0.0590 |
+| case-007 (World Cup) - must stay rejected | 0.1244 | 0.1244 |
+
+### 15.4 What did not change
+
+- Retrieval remains one document-scoped pgvector query with an explicit
+  `document_id` filter; no multi-document retrieval.
+- No query rewriting, no second embedding call, no reranker, no extra LLM
+  call, no agent limit changes (`AGENT_MAX_ITERATIONS`/`_MAX_TOOL_CALLS`
+  stay at 3).
+- `/search` and `/ask` response contracts are unchanged; `AnswerSource` is
+  still `{chunk_id, chunk_index, page_number}`.
+- No new services, tables, dependencies, or endpoints.
+
+### 15.5 Configuration
+
+`CHUNK_SIZE`, `CHUNK_OVERLAP`, `MIN_CHUNK_SIZE`, `RAG_MIN_SIMILARITY` and
+`RAG_CONTEXT_MAX_CHARS` are all read from the existing Pydantic `Settings`
+class (no scattered `os.getenv()`), are validated at load time
+(overlap < size, min < size, threshold in [-1, 1]), and are documented in
+`backend/.env.example`. `backend/.env` carries the same values, so native
+and Docker runs behave identically (`docker-compose.yml` passes
+`backend/.env` through `env_file`).
+
+**Existing documents must be re-ingested** (`POST /documents/{id}/ingest`
+with `force=true`, or re-upload) after a chunking change: chunks are only
+regenerated at ingestion time.
+
+### 15.6 Phase 15 limits
+
+- A cosine threshold is *topical*, not semantic. Questions about topics the
+  document does not cover but that sit next to covered topics (dental
+  cover, maternity waiting period, coinsurance, prescription drugs) now
+  clear 0.30 (0.37-0.50) and receive a grounded `ok` context plus an honest
+  "the document does not state this" answer. The golden dataset therefore
+  scores *out-of-scope* questions as refusals, and the document-adjacent
+  distractors are asserted separately in
+  `backend/scripts/test_phase15_retrieval_quality.py` (they must still only
+  ever return chunks owned by the queried document).
+- The sample policy is a single page, so the expanded golden set cannot
+  cover page-specific questions. Recorded as a limitation rather than
+  silently skipped.
+- Lowering `CHUNK_SIZE` increases per-document embedding work at ingestion
+  time (4 chunks instead of 2 for the sample policy); retrieval and
+  answer latency are unaffected (measured ~135-194 ms retrieval per `/ask`).

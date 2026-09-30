@@ -175,6 +175,34 @@ weak keyword heuristic. Markdown and JSON reports are written to
 `backend/tests/test_cross_document_isolation.py` proves a question scoped to
 one document can never return another document's chunks.
 
+## Retrieval Quality (Phase 15)
+
+Phase 14's evaluation exposed one failing case: the pre-existing-condition
+waiting-period question was rejected by the similarity threshold. The cause
+was chunk-level embedding dilution — at `CHUNK_SIZE=800` the sample policy
+became two broad chunks whose vectors scored 0.23/0.27 against the question,
+while the Section 3 text alone scores 0.65.
+
+Phase 15 therefore reduced `CHUNK_SIZE` 800 → 500 and `CHUNK_OVERLAP`
+150 → 100 (smaller, more topical chunks) and **left `RAG_MIN_SIMILARITY`
+at 0.30**, so recall improved without weakening the global rejection bar.
+Measurements, alternatives rejected, and the before/after tables are in
+`ARCHITECTURE.md§15` and `docs/phases/PHASE_15_RETRIEVAL_QUALITY.md`.
+
+Re-ingest existing documents after changing chunking — chunks are only
+regenerated at ingestion time:
+
+```bash
+curl -X POST "http://localhost:8000/documents/<id>/ingest?force=true" -F "file=@policy.pdf"
+```
+
+Golden-set evaluation (Phase 15 expanded it from 8 to 21 cases):
+
+```bash
+cd backend
+python evaluate.py       # writes eval/reports/<timestamp>_sample_insurance_policy.{md,json}
+```
+
 ## Testing
 
 ### Backend tests
@@ -185,8 +213,11 @@ cd backend
 # Per-phase regression scripts (each prints its own pass/fail summary)
 python scripts/test_phase12_frontend_integration.py
 
-# Phase 14 test suite (unit tests + cross-document isolation)
+# Phase 14 + Phase 15 test suite (unit tests + cross-document isolation)
 python -m pytest tests
+
+# Phase 15 retrieval-quality regression (live model + live database)
+python scripts/test_phase15_retrieval_quality.py
 ```
 
 ### Evaluation
@@ -238,6 +269,12 @@ npm run build
 | `ALLOWED_ORIGINS` | `http://localhost:5173` | CORS allowed origins (comma-separated) |
 | `ENVIRONMENT` | `development` | Environment name |
 | `LOG_LEVEL` | `INFO` | Python logging level |
+| `CHUNK_SIZE` | `500` | Max characters per chunk (Phase 15: reduced from 800) |
+| `CHUNK_OVERLAP` | `100` | Word-based overlap carried into the next chunk (Phase 15: reduced from 150) |
+| `MIN_CHUNK_SIZE` | `100` | Chunks shorter than this are merged into their predecessor |
+| `RETRIEVAL_TOP_K_DEFAULT` / `_MAX` | `5` / `20` | Chunks returned by `/search` |
+| `RAG_MIN_SIMILARITY` | `0.30` | Cosine floor; below it `/ask` returns `below_similarity_threshold` with no sources |
+| `RAG_CONTEXT_MAX_CHARS` | `8000` | Character budget for the context handed to the model |
 | `ENABLE_METRICS_ENDPOINT` | `true` | Serve `GET /metrics/runtime` |
 | `ENABLE_REQUEST_LOGGING` | `true` | Emit per-stage/request `query_event` log lines |
 | `EVAL_GOLDEN_SET_DIR` | `../eval/golden_sets` | Golden datasets read by `evaluate.py` |

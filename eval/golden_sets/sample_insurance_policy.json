@@ -1,7 +1,8 @@
 {
   "document_alias": "sample_insurance_policy",
   "document_id": "phase14_sample_insurance_policy.pdf",
-  "notes": "Synthetic sample document created by backend/scripts/create_phase14_sample_document.py. document_id is the document filename, which evaluate.py resolves to a real UUID through GET /documents.",
+  "version": 2,
+  "notes": "Synthetic sample document created by backend/scripts/create_phase14_sample_document.py. document_id is the document filename, which evaluate.py resolves to a real UUID through GET /documents.\n\nVersion 2 (Phase 15): expanded from 8 to 21 cases so retrieval claims rest on more than one example. Coverage by category:\n- direct factual questions: case-001, case-003, case-004, case-005, case-009, case-010\n- paraphrased questions: case-002, case-012, case-015\n- terminology mismatch: case-016 (submitted vs filed), case-014 (pro-rated refund), case-018 (deductible repeated in Section 1 and Section 6)\n- answer near a chunk boundary: case-013 (end of Section 2 sits at a chunk boundary under CHUNK_SIZE=500)\n- repeated/common terms in multiple sections: case-017 (notice/days in Sections 4 and 5), case-018\n- policy-specific terminology: case-009 (policy year), case-014 (pro-rated refund), case-011 (indemnification)\n- unanswerable questions: case-006, case-007, case-019, case-020, case-021 (plus case-008, the pre-existing empty-query input case)\n- semantically similar distractors: deliberately NOT scored as refusals. A cosine threshold is topical, so document-adjacent absent topics (dental coverage, maternity waiting period, coinsurance, prescription drugs) are retrieved on purpose; rejecting them at retrieval time would require semantic, not vector, judgement. They are exercised in scripts/test_phase15_retrieval_quality.py instead, where the assertion is that they still return only chunks owned by the queried document.\n- specific-page questions: not covered. The sample document is a single page, so no multi-page fixture exists yet; recorded as a known limitation rather than silently skipped.\n\nEvery case was checked against the live API before being added. Cases were not added or removed to chase a target score.",
   "cases": [
     {
       "id": "case-001",
@@ -46,7 +47,7 @@
       "expected_answerable": true,
       "expected_has_answer": true,
       "expected_answer_keywords": ["30"],
-      "description": "Waiting period from Section 3"
+      "description": "Waiting period from Section 3. Phase 14 baseline failure (below_similarity_threshold); the Phase 15 fix target."
     },
     {
       "id": "case-006",
@@ -71,6 +72,120 @@
       "expected_answerable": false,
       "expected_has_answer": false,
       "description": "Empty query, must be rejected as invalid"
+    },
+    {
+      "id": "case-009",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "What is the annual family deductible?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["1000", "deductible"],
+      "description": "Second deductible figure from Section 1, direct fact"
+    },
+    {
+      "id": "case-010",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "How many days written notice must Acme give if it cancels the policy?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["60", "days"],
+      "description": "Acme-side notice period from Section 4, repeats the term notice"
+    },
+    {
+      "id": "case-011",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "Which section of the policy describes Acme's indemnification obligation?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["Section 6"],
+      "description": "Section reference question, policy-specific terminology from Section 6"
+    },
+    {
+      "id": "case-012",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "What happens if a claim is filed after the deadline?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["denied", "Acme"],
+      "description": "Paraphrase of Section 5 late-claim rule"
+    },
+    {
+      "id": "case-013",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "Does the annual coverage limit apply to outpatient claims?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["outpatient"],
+      "description": "Answer text sits at the end of Section 2, next to a chunk boundary under CHUNK_SIZE=500"
+    },
+    {
+      "id": "case-014",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "Is a refund returned for the unused portion of the policy period?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["pro-rated"],
+      "description": "Policy-specific terminology (pro-rated refund) from Section 4"
+    },
+    {
+      "id": "case-015",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "How long does a policyholder wait before claims for pre-existing conditions are covered?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["30"],
+      "description": "Paraphrase of case-005; proves the Phase 15 fix generalises beyond the original wording"
+    },
+    {
+      "id": "case-016",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "When must a claim be submitted?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["90"],
+      "description": "Terminology mismatch: submitted vs filed (Section 5)"
+    },
+    {
+      "id": "case-017",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "Which two different notice periods of thirty and sixty days appear in this policy?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["30", "60"],
+      "description": "Repeated terms (notice, days, thirty/sixty) in Section 4 next to a similar day-count deadline in Section 5"
+    },
+    {
+      "id": "case-018",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "Where in the policy is the deductible mentioned?",
+      "expected_answerable": true,
+      "expected_has_answer": true,
+      "expected_answer_keywords": ["Section 1", "Section 6"],
+      "description": "Common term (deductible) appearing in more than one section"
+    },
+    {
+      "id": "case-019",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "What is the capital of France?",
+      "expected_answerable": false,
+      "expected_has_answer": false,
+      "description": "Out-of-scope geography question, must remain rejected"
+    },
+    {
+      "id": "case-020",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "Who wrote the novel Pride and Prejudice?",
+      "expected_answerable": false,
+      "expected_has_answer": false,
+      "description": "Out-of-scope literature question, must remain rejected"
+    },
+    {
+      "id": "case-021",
+      "document_id": "phase14_sample_insurance_policy.pdf",
+      "query": "How do I bake a chocolate cake?",
+      "expected_answerable": false,
+      "expected_has_answer": false,
+      "description": "Out-of-scope recipe question, must remain rejected"
     }
   ]
 }
