@@ -84,6 +84,35 @@ describe('App', () => {
     expect(screen.getByText('Upload PDF')).toBeInTheDocument()
   })
 
+  it('surfaces the upload failure message to the user', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([]),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 413,
+        json: () => Promise.resolve({ detail: 'File exceeds maximum size of 25 MB.' }),
+      } as Response)
+
+    const user = userEvent.setup()
+    render(<App />)
+    await waitFor(() => {
+      expect(screen.getByText('Upload PDF')).toBeInTheDocument()
+    })
+
+    const input = screen.getByLabelText(/select pdf file/i)
+    await user.upload(input, new File(['x'], 'huge.pdf', { type: 'application/pdf' }))
+    await user.click(screen.getByRole('button', { name: /^upload$/i }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'File exceeds maximum size of 25 MB.',
+      )
+    })
+  })
+
   it('shows chat panel with disabled state', async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,

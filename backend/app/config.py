@@ -1,4 +1,5 @@
 from pathlib import Path
+import logging
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -44,6 +45,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_chunking(self) -> "Settings":
+        if self.CHUNK_SIZE < 1:
+            raise ValueError(
+                f"CHUNK_SIZE must be at least 1 (got {self.CHUNK_SIZE})"
+            )
+        if self.CHUNK_OVERLAP < 0:
+            raise ValueError(
+                f"CHUNK_OVERLAP must be >= 0 (got {self.CHUNK_OVERLAP})"
+            )
         if self.CHUNK_OVERLAP >= self.CHUNK_SIZE:
             raise ValueError(
                 f"CHUNK_OVERLAP must be smaller than CHUNK_SIZE "
@@ -56,6 +65,32 @@ class Settings(BaseSettings):
             )
         if self.MIN_CHUNK_SIZE < 1:
             raise ValueError("MIN_CHUNK_SIZE must be at least 1")
+        if self.MAX_UPLOAD_SIZE_MB < 1:
+            raise ValueError(
+                "MAX_UPLOAD_SIZE_MB must be at least 1 "
+                f"(got {self.MAX_UPLOAD_SIZE_MB})"
+            )
+        if self.MAX_QUERY_LENGTH < 1:
+            raise ValueError(
+                "MAX_QUERY_LENGTH must be at least 1 "
+                f"(got {self.MAX_QUERY_LENGTH})"
+            )
+        if self.EMBEDDING_BATCH_SIZE < 1:
+            raise ValueError(
+                "EMBEDDING_BATCH_SIZE must be at least 1 "
+                f"(got {self.EMBEDDING_BATCH_SIZE})"
+            )
+        if self.RETRIEVAL_TOP_K_DEFAULT < 1:
+            raise ValueError(
+                "RETRIEVAL_TOP_K_DEFAULT must be at least 1 "
+                f"(got {self.RETRIEVAL_TOP_K_DEFAULT})"
+            )
+        if self.RETRIEVAL_TOP_K_MAX < self.RETRIEVAL_TOP_K_DEFAULT:
+            raise ValueError(
+                "RETRIEVAL_TOP_K_MAX must be >= RETRIEVAL_TOP_K_DEFAULT "
+                f"(got max={self.RETRIEVAL_TOP_K_MAX}, "
+                f"default={self.RETRIEVAL_TOP_K_DEFAULT})"
+            )
         if self.RAG_CONTEXT_MAX_CHARS < 1:
             raise ValueError("RAG_CONTEXT_MAX_CHARS must be greater than 0")
         if self.RAG_MIN_SIMILARITY < -1.0 or self.RAG_MIN_SIMILARITY > 1.0:
@@ -73,16 +108,36 @@ class Settings(BaseSettings):
                 "OLLAMA_NUM_PREDICT must be at least 1 "
                 f"(got {self.OLLAMA_NUM_PREDICT})"
             )
-        if self.AGENT_MAX_ITERATIONS < 1:
+        # Phase 11 safety boundary: these two cap how many Ollama calls and
+        # search_document executions a single /ask may make. They must stay
+        # bounded; raising them would expand the agent's autonomy.
+        if not 1 <= self.AGENT_MAX_ITERATIONS <= 3:
             raise ValueError(
-                "AGENT_MAX_ITERATIONS must be at least 1 "
+                "AGENT_MAX_ITERATIONS must be between 1 and 3 "
                 f"(got {self.AGENT_MAX_ITERATIONS})"
             )
-        if self.AGENT_MAX_TOOL_CALLS < 1:
+        if not 1 <= self.AGENT_MAX_TOOL_CALLS <= 3:
             raise ValueError(
-                "AGENT_MAX_TOOL_CALLS must be at least 1 "
+                "AGENT_MAX_TOOL_CALLS must be between 1 and 3 "
                 f"(got {self.AGENT_MAX_TOOL_CALLS})"
             )
+        if not self.ENVIRONMENT.strip():
+            raise ValueError("ENVIRONMENT must be a non-empty string")
+        level_value = getattr(logging, self.LOG_LEVEL.upper(), None)
+        if not isinstance(level_value, int):
+            raise ValueError(
+                f"LOG_LEVEL must be a standard logging level "
+                f"(got {self.LOG_LEVEL!r})"
+            )
+        origins = self.allowed_origins_list
+        # An empty list is a valid configuration (it disables cross-origin
+        # access); what is not valid is a listed origin that is not one.
+        for origin in origins:
+            if not origin.startswith(("http://", "https://")):
+                raise ValueError(
+                    "ALLOWED_ORIGINS entries must be absolute http(s) origins "
+                    f"(got {origin!r})"
+                )
         return self
 
     @property

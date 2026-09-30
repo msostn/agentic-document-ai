@@ -731,3 +731,134 @@ regenerated at ingestion time.
 - Lowering `CHUNK_SIZE` increases per-document embedding work at ingestion
   time (4 chunks instead of 2 for the sample policy); retrieval and
   answer latency are unaffected (measured ~135-194 ms retrieval per `/ask`).
+
+---
+
+## 16. Phase 16 - Production Hardening, Reliability & Release Quality
+
+### 16.1 Scope
+
+Phase 16 touched no architecture, no retrieval quality, no endpoint contract
+and no dependency version. Six areas: configuration hardening, API error
+consistency, ingestion reliability, test infrastructure, Docker
+reproducibility, and documentation. The engineering rule was
+`measure -> identify failure -> smallest justified change -> test -> evaluate ->
+verify Docker -> document`.
+
+### 16.2 Reliability decisions
+
+**Settings fail fast.** `Settings` previously validated only the Phase 5
+chunking relationships. It now also rejects: `CHUNK_SIZE < 1`,
+`CHUNK_OVERLAP < 0`, `MAX_UPLOAD_SIZE_MB < 1`, `MAX_QUERY_LENGTH < 1`,
+`EMBEDDING_BATCH_SIZE < 1`, `RETRIEVAL_TOP_K_DEFAULT < 1`,
+`RETRIEVAL_TOP_K_MAX < RETRIEVAL_TOP_K_DEFAULT`, `RAG_CONTEXT_MAX_CHARS < 1`,
+`RAG_MIN_SIMILARITY` outside [-1, 1], `OLLAMA_TIMEOUT_SECONDS < 1`,
+`OLLAMA_NUM_PREDICT < 1`, `AGENT_MAX_ITERATIONS`/`AGENT_MAX_TOOL_CALLS`
+outside 1-3, a blank `ENVIRONMENT`, an unrecognised `LOG_LEVEL`, and any
+`ALLOWED_ORIGINS` entry that is not an `http(s)` origin. An empty
+`ALLOWED_ORIGINS` remains valid (it disables cross-origin access) because the
+deployment docs and Phase 13 tests treat it that way.
+
+**Every error is JSON with a correlation ID.** A failure that no route
+handles used to fall through to Starlette's plain-text
+`Internal Server Error`. `app.main` now registers a handler for `Exception`
+that returns `500 {"detail": "Internal server error."}`, adds
+`X-Request-ID`, and logs `unhandled_exception` with `exc_info` plus the
+request ID, method, path and error type. The stack trace never leaves the
+server.
+
+Two subtleties were found while making that work and are worth recording:
+
+1. Starlette routes the `Exception` handler through `ServerErrorMiddleware`,
+   which runs *outside* the correlation middleware - so by the time the
+   handler executes, that middleware's contextvar has already been cleared.
+   `get_request_id()` therefore mints a *fresh* UUID when unset, which would
+   have logged an ID nobody could match. The correlation middleware now also
+   publishes the ID on the request scope (`request.state.request_id`), and
+   the handler reads it from there, logs it, and stamps it on the 500
+   response. Correlation now works for failures as well as successes.
+2. Because the exception propagates *through* the middleware, the normal
+   `response.headers["X-Request-ID"] = ...` line after the `try/finally` is
+   never reached for a 500 - hence the handler sets the header itself.
+
+**Swallowed ingestion failures are now logged.** Both ingestion routes had
+`except Exception: raise HTTPException(500, ...)` with a deliberately generic
+client message and *no* server-side record: uvicorn logs access lines for
+`HTTPException`, not tracebacks, so an unexpected embedding/persistence
+failure left no evidence. Both now log `ingestion_failed` with `exc_info`,
+the request ID, the document ID and the stage before returning the same
+unchanged generic message.
+
+**Upstream model payloads are not echoed into errors.** Two
+`OllamaResponseError` messages interpolated the whole Ollama response object,
+which can contain generated text and (for `qwen3:4b`) chain-of-thought under
+`message.reasoning`. They now use `_describe_payload()`, which reports
+`payload_keys` / `message_keys` structure only - enough to diagnose a
+malformed response, with no content.
+
+**Frontend.** Two real defects, both reproduced by tests that fail without the
+fix: (a) `App.tsx` suppressed `ErrorBanner` whenever `uploadState === 'error'`,
+which is exactly when an upload fails, so upload errors were never rendered
+(`UploadPanel` only renders a Dismiss button, no message); (b) `ChatPanel`
+appended an in-flight `/ask` response after `documentId` changed, so an answer
+for document A could be shown under document B. A monotonic request token is
+bumped on every document switch and every submit; a response resolving against
+a stale token is dropped.
+
+### 16.3 Test infrastructure decisions
+
+- **`backend/pytest.ini` with `testpaths = tests`.** Bare `pytest` from
+  `backend/` used to match `backend/scripts/test_*.py` as well. Those files
+  are driver scripts: their `record()` helper appends to a list and returns
+  `None`, so pytest "passes" them regardless of what they measured, and one
+  helper (`test_01_ordering_detail(stored)`) takes a non-existent fixture and
+  produces a collection error. Collecting only `tests/` makes the default
+  command mean exactly one thing: 76 tests, 0 failures, 0 collection errors.
+  Application behaviour was not touched to solve a runner problem.
+- **The phase scripts stay driver scripts** and are executed as programs,
+  where `main()` prints `Total: N checks, N passed, 0 failed` and exits
+  non-zero on failure.
+- **`scripts/run_all_regressions.py`** is the single documented command
+  (README) for the complete backend suite: it runs pytest and then all ten
+  drivers and fails if any of them fails.
+- **`backend/requirements-dev.txt`** declares `pytest`, which was already in
+  use but undeclared. It is deliberately separate from `requirements.txt` so
+  the runtime image does not grow a test dependency.
+- **`backend/tests/test_phase16_units.py`** (30 tests) covers the new
+  settings validation, the 500/404 JSON contract, log correlation (log record
+  `request_id` == response `X-Request-ID`), and the payload-redaction helper.
+- The isolation test, the golden evaluation and the per-phase scripts were
+  all re-run; nothing was weakened to make Phase 16 pass.
+
+### 16.4 Deployment / reproducibility decisions
+
+`.dockerignore` now also excludes `tests`, `pytest.ini` and
+`scripts/test_*.py`, plus nested `__pycache__`/`*.pyc` (Docker's pattern
+matching does not treat a bare `__pycache__` as a recursive match). The image
+is `python:3.11-slim`, still runs as `appuser` (uid 1000), still contains no
+`.env`, still bakes no model cache. `docker compose build`, `up`, the full
+E2E (24 checks), the golden evaluation against the container, and `down` were
+all executed against the final image.
+
+### 16.5 What remains intentionally out of scope
+
+Authentication, chat persistence, multi-document QA, asynchronous ingestion
+/ background workers, Redis, Celery, LangChain/LangGraph, cloud LLM fallback,
+rerankers, a second vector database, external monitoring, CI/CD, Alembic,
+frontend redesign, dependency upgrades. None of them is needed to make the
+existing architecture harder to break, and adding them would violate the
+phase's own non-goals.
+
+### 16.6 Phase 16 limits
+
+- `/search` deliberately has no similarity floor: it returns the top-k
+  document-scoped chunks, so a query whose terms are absent can still return
+  weakly-related chunks of the *same* document. The rejection floor applies to
+  `/ask` context building (`RAG_MIN_SIMILARITY`), which is where answers are
+  produced. Verified as behaviour, not changed.
+- Settings validation is import-time: a bad value fails the process at boot,
+  which is the intent, but it means a typo in `.env` is only discovered on the
+  next start.
+- The runtime metrics endpoint is still in-process and resets on restart.
+- The 500 path adds one log record per failure with a full traceback; that is
+  server-side only and bounded by the failure rate.

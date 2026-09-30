@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ChatPanel } from '../components/ChatPanel'
 
@@ -47,6 +47,46 @@ describe('ChatPanel', () => {
   it('clears messages when documentId changes', () => {
     const { rerender } = render(<ChatPanel documentId="doc-1" documentReady={true} />)
     rerender(<ChatPanel documentId="doc-2" documentReady={true} />)
+    expect(screen.queryByText('You')).not.toBeInTheDocument()
+  })
+
+  it('does not deliver an in-flight answer to another document', async () => {
+    let resolveAsk: (value: unknown) => void = () => {}
+    const pending = new Promise((resolve) => {
+      resolveAsk = resolve
+    })
+    vi.mocked(fetch).mockReturnValueOnce(pending as Promise<Response>)
+
+    const user = userEvent.setup()
+    const { rerender } = render(<ChatPanel documentId="doc-1" documentReady={true} />)
+
+    const input = screen.getByRole('textbox', { name: /question input/i })
+    await user.type(input, 'What is the deductible?')
+    await user.click(screen.getByRole('button', { name: /ask/i }))
+
+    // The user switches documents while the request is still in flight.
+    rerender(<ChatPanel documentId="doc-2" documentReady={true} />)
+
+    await act(async () => {
+      resolveAsk({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            document_id: 'doc-1',
+            query: 'What is the deductible?',
+            answer: 'STALE_ANSWER_BELONGING_TO_DOC_1',
+            sources: [],
+            context_status: 'ok',
+            model: 'qwen3:4b',
+          }),
+      })
+      await pending
+    })
+
+    expect(
+      screen.queryByText('STALE_ANSWER_BELONGING_TO_DOC_1'),
+    ).not.toBeInTheDocument()
     expect(screen.queryByText('You')).not.toBeInTheDocument()
   })
 })

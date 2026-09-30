@@ -203,22 +203,58 @@ cd backend
 python evaluate.py       # writes eval/reports/<timestamp>_sample_insurance_policy.{md,json}
 ```
 
+## Production Hardening (Phase 16)
+
+Phase 16 changed no architecture, no retrieval quality and no API contract. It
+hardened the edges around them:
+
+- **Settings are validated at startup.** Chunking, upload size, retrieval
+  `top_k`, the agent iteration/tool caps (1–3), `LOG_LEVEL` and each
+  `ALLOWED_ORIGINS` entry now fail loudly at boot instead of at request time.
+- **Unhandled exceptions keep the JSON error contract.** A failure no route
+  handles returns `500 {"detail": "Internal server error."}` with an
+  `X-Request-ID`; the stack trace goes to the server log under the same
+  request ID and is never sent to the client. Unexpected ingestion failures are
+  logged the same way instead of only surfacing as an anonymous 500.
+- **Frontend failure states are usable.** An upload error is actually shown,
+  and an `/ask` response that resolves after the user switched documents is
+  discarded rather than rendered under the wrong document.
+- **One command runs the backend suite:** `python scripts/run_all_regressions.py`.
+
+Measurements, rejected alternatives and the before/after table are in
+`ARCHITECTURE.md§16` and `docs/phases/PHASE_16_PRODUCTION_HARDENING.md`.
+
 ## Testing
 
-### Backend tests
+### Complete backend suite
+
+One command runs everything — the unit/integration tests plus every Phase 1–15
+regression script, and exits non-zero if any of it fails:
+
+```bash
+cd backend
+pip install -r requirements-dev.txt    # once; pytest is not a runtime dependency
+python scripts/run_all_regressions.py
+```
+
+Each regression driver also prints its own summary, so the parts can be run
+individually:
 
 ```bash
 cd backend
 
-# Per-phase regression scripts (each prints its own pass/fail summary)
-python scripts/test_phase12_frontend_integration.py
+# Unit + integration tests (pytest.ini restricts bare `pytest` to backend/tests)
+python -m pytest
 
-# Phase 14 + Phase 15 test suite (unit tests + cross-document isolation)
-python -m pytest tests
-
-# Phase 15 retrieval-quality regression (live model + live database)
+# Phase 1–15 regression drivers (each prints "N checks, N passed, 0 failed")
+python scripts/test_chunker.py
+python scripts/test_ingestion.py
+python scripts/test_phase8_retrieval.py
 python scripts/test_phase15_retrieval_quality.py
 ```
+
+Expected: `python -m pytest` reports **0 failures and 0 collection errors**, and
+every regression driver ends with **0 failed**.
 
 ### Evaluation
 
@@ -266,13 +302,23 @@ npm run build
 | `DATABASE_URL` | — | PostgreSQL connection URL (required) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `qwen3:4b` | Ollama model name |
-| `ALLOWED_ORIGINS` | `http://localhost:5173` | CORS allowed origins (comma-separated) |
+| `OLLAMA_TIMEOUT_SECONDS` | `120` | HTTP timeout for an Ollama call |
+| `OLLAMA_TEMPERATURE` | `0.1` | Sampling temperature for generation |
+| `OLLAMA_NUM_PREDICT` | `2048` | Max tokens the model may generate per response |
+| `AGENT_MAX_ITERATIONS` | `3` | Hard cap on agent-loop iterations (validated 1–3) |
+| `AGENT_MAX_TOOL_CALLS` | `3` | Hard cap on tool calls per `/ask` (validated 1–3) |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | sentence-transformers model |
+| `EMBEDDING_BATCH_SIZE` | `32` | Texts embedded per batch |
+| `EMBEDDING_DEVICE` | `cpu` | Device used for embedding |
+| `MAX_UPLOAD_SIZE_MB` | `25` | Upload size limit; larger files get `413` |
+| `ALLOWED_ORIGINS` | `http://localhost:5173` | CORS allowed origins (comma-separated; empty disables cross-origin access) |
 | `ENVIRONMENT` | `development` | Environment name |
 | `LOG_LEVEL` | `INFO` | Python logging level |
 | `CHUNK_SIZE` | `500` | Max characters per chunk (Phase 15: reduced from 800) |
 | `CHUNK_OVERLAP` | `100` | Word-based overlap carried into the next chunk (Phase 15: reduced from 150) |
 | `MIN_CHUNK_SIZE` | `100` | Chunks shorter than this are merged into their predecessor |
-| `RETRIEVAL_TOP_K_DEFAULT` / `_MAX` | `5` / `20` | Chunks returned by `/search` |
+| `MAX_QUERY_LENGTH` | `8000` | Character cap on `/ask` and `/search` queries |
+| `RETRIEVAL_TOP_K_DEFAULT` / `_MAX` | `5` / `20` | Chunks returned by `/search` (validated: max ≥ default) |
 | `RAG_MIN_SIMILARITY` | `0.30` | Cosine floor; below it `/ask` returns `below_similarity_threshold` with no sources |
 | `RAG_CONTEXT_MAX_CHARS` | `8000` | Character budget for the context handed to the model |
 | `ENABLE_METRICS_ENDPOINT` | `true` | Serve `GET /metrics/runtime` |

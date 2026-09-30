@@ -40,6 +40,23 @@ class OllamaResponseError(OllamaError):
     """Raised when Ollama returns a malformed or empty response."""
 
 
+def _describe_payload(data: object) -> str:
+    """Describe an upstream payload by structure, never by content.
+
+    Ollama chat responses carry generated text (and, for reasoning models,
+    chain-of-thought in ``message.reasoning``). Embedding the payload in an
+    exception message would copy that text verbatim into an HTTP error body.
+    Structure-only output is enough to diagnose a malformed response.
+    """
+    if not isinstance(data, dict):
+        return f"payload_type={type(data).__name__}"
+    message = data.get("message")
+    message_keys = (
+        sorted(message.keys()) if isinstance(message, dict) else type(message).__name__
+    )
+    return f"payload_keys={sorted(data.keys())} message_keys={message_keys}"
+
+
 # ---------------------------------------------------------------------------
 # Phase 10: single-shot generation (preserved, unchanged)
 # ---------------------------------------------------------------------------
@@ -127,7 +144,7 @@ def generate(
         text = message["content"]
     except (KeyError, TypeError) as exc:
         raise OllamaResponseError(
-            f"Ollama response missing message.content: {data}"
+            f"Ollama response missing message.content: {_describe_payload(data)}"
         ) from exc
 
     if not isinstance(text, str) or not text.strip():
@@ -210,7 +227,7 @@ def _parse_chat_response(data: dict) -> ChatResponse:
         message_data = data["message"]
     except (KeyError, TypeError) as exc:
         raise OllamaResponseError(
-            f"Ollama response missing 'message' field: {data}"
+            f"Ollama response missing 'message' field: {_describe_payload(data)}"
         ) from exc
 
     if not isinstance(message_data, dict):

@@ -196,11 +196,27 @@ The readiness endpoint checks:
 | `DATABASE_URL` | — | PostgreSQL connection URL (required) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `qwen3:4b` | Ollama model name |
+| `OLLAMA_TIMEOUT_SECONDS` | `120` | HTTP timeout for an Ollama call |
+| `OLLAMA_TEMPERATURE` | `0.1` | Sampling temperature for generation |
+| `OLLAMA_NUM_PREDICT` | `2048` | Max tokens the model may generate per response |
+| `AGENT_MAX_ITERATIONS` | `3` | Hard cap on agent-loop iterations (validated 1–3) |
+| `AGENT_MAX_TOOL_CALLS` | `3` | Hard cap on tool calls per `/ask` (validated 1–3) |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformers model |
+| `EMBEDDING_BATCH_SIZE` | `32` | Texts embedded per batch |
+| `MAX_UPLOAD_SIZE_MB` | `25` | Maximum upload size in MB |
+| `CHUNK_SIZE` | `500` | Max characters per chunk (Phase 15 baseline) |
+| `CHUNK_OVERLAP` | `100` | Word-based overlap carried into the next chunk |
+| `RETRIEVAL_TOP_K_DEFAULT` / `_MAX` | `5` / `20` | Chunks returned by `/search` |
+| `RAG_MIN_SIMILARITY` | `0.30` | Cosine floor for `/ask` context |
 | `ALLOWED_ORIGINS` | `http://localhost:5173` | CORS allowed origins (comma-separated) |
 | `ENVIRONMENT` | `development` | Environment name |
 | `LOG_LEVEL` | `INFO` | Python logging level |
-| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformers model |
-| `MAX_UPLOAD_SIZE_MB` | `25` | Maximum upload size in MB |
+
+Every value above is validated when the settings object is built: a bad
+chunking relationship, a `top_k` maximum below its default, an agent bound
+outside 1–3, an unparseable `LOG_LEVEL` or a non-`http(s)` origin stops the
+process at startup instead of failing later per request. Copy
+`backend/.env.example` to `backend/.env` and edit the placeholders.
 
 ### Frontend (`frontend/.env`)
 
@@ -216,12 +232,16 @@ The readiness endpoint checks:
 ### Backend container
 
 - Base image: `python:3.11-slim`
-- Runs as non-root user (`appuser`)
+- Runs as non-root user (`appuser`, uid/gid 1000)
 - Exposes port 8000
 - Binds uvicorn to `0.0.0.0`
 - Reads configuration from environment variables
 - Reaches host Ollama via `http://host.docker.internal:11434`
 - Reaches Supabase via the configured `DATABASE_URL`
+- `.dockerignore` keeps `.env`, virtualenvs, bytecode caches, the test suite
+  (`tests/`, `pytest.ini`) and the phase regression scripts out of the image;
+  no model cache is baked in (the embedding model is fetched at first use into
+  the container's home cache)
 
 ### Frontend container
 

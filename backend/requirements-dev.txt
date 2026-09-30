@@ -1,0 +1,5 @@
+# Development and test-only dependencies.
+#
+# Not installed by the backend Docker image (which uses requirements.txt only)
+# and not required to run the application.
+pytest

@@ -65,7 +65,7 @@ function App() {
         <p>Upload a PDF and ask questions grounded in that document only.</p>
       </header>
 
-      {fetchError && uploadState !== 'error' && (
+      {fetchError && (
         <ErrorBanner message={fetchError} onDismiss={() => setFetchError(null)} />
       )}
 

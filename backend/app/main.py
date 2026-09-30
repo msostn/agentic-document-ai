@@ -5,6 +5,7 @@ import time
 import uuid
 from fastapi import FastAPI, Response, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.config import settings
@@ -13,6 +14,7 @@ from app.routes import documents
 from app.timing import (
     set_request_id,
     clear_request_id,
+    get_request_id,
     is_metrics_enabled,
     get_metrics_snapshot,
     pop_context_building_ms,
@@ -46,6 +48,37 @@ app.add_middleware(
 app.include_router(documents.router)
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Last-resort handler for exceptions that no route or middleware handled.
+
+    Every other error response in this API is JSON ``{"detail": ...}``.
+    Without this handler Starlette answers an unexpected failure with a
+    plain-text body, so the contract was inconsistent for exactly the case
+    operators care about most.
+
+    The stack trace is written to the server log (with the request's
+    correlation ID) and never returned to the client.
+    """
+    # The correlation middleware has already cleared its contextvar by the
+    # time this runs, so the ID is read from the request scope.
+    request_id = getattr(request.state, "request_id", None)
+    logger.error(
+        "unhandled_exception",
+        exc_info=exc,
+        extra={
+            "request_id": request_id or get_request_id(),
+            "method": request.method,
+            "path": request.url.path,
+            "error_type": type(exc).__name__,
+        },
+    )
+    response = JSONResponse(status_code=500, content={"detail": "Internal server error."})
+    if request_id:
+        response.headers["X-Request-ID"] = request_id
+    return response
+
+
 @app.middleware("http")
 async def add_request_correlation_id(
     request: Request,
@@ -56,6 +89,10 @@ async def add_request_correlation_id(
     # Generate a fresh request ID for each request
     request_id = str(uuid.uuid4())
     set_request_id(request_id)
+    # Publish it on the request scope so late handlers (the global
+    # Exception handler runs after this middleware has cleared its
+    # contextvar) can still correlate with the same ID.
+    request.state.request_id = request_id
 
     # Start total request timing
     start = time.perf_counter()

@@ -95,6 +95,19 @@ async def upload_document(
             detail={"message": str(exc), "document_id": str(doc.id)},
         ) from exc
     except Exception as exc:
+        # Unexpected ingestion failure: the client gets a stable, generic
+        # message; the server log keeps the correlation ID and the stack
+        # trace. Without this the failure would only ever be visible as a
+        # 500 with no server-side record of what happened.
+        logger.error(
+            "ingestion_failed",
+            exc_info=exc,
+            extra={
+                "request_id": get_request_id(),
+                "document_id": str(doc.id),
+                "stage": "upload",
+            },
+        )
         raise HTTPException(
             status_code=500,
             detail={
@@ -150,6 +163,15 @@ def ingest_document_route(
             detail={"message": str(exc), "document_id": str(document_id)},
         ) from exc
     except Exception as exc:
+        logger.error(
+            "ingestion_failed",
+            exc_info=exc,
+            extra={
+                "request_id": get_request_id(),
+                "document_id": str(document_id),
+                "stage": "reingest",
+            },
+        )
         raise HTTPException(
             status_code=500,
             detail={

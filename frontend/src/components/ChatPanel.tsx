@@ -24,6 +24,11 @@ export function ChatPanel({ documentId, documentReady }: ChatPanelProps) {
   const [globalError, setGlobalError] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  // Monotonic token identifying the newest chat interaction. It is bumped on
+  // every document switch and on every submit, so a response that resolves
+  // after the user moved on (most importantly: to another document) is
+  // discarded instead of being appended to the wrong conversation.
+  const requestTokenRef = useRef(0)
 
   useEffect(() => {
     if (messagesEndRef.current?.scrollIntoView) {
@@ -32,6 +37,7 @@ export function ChatPanel({ documentId, documentReady }: ChatPanelProps) {
   }, [messages])
 
   useEffect(() => {
+    requestTokenRef.current += 1
     setMessages([])
     setQuery('')
     setAskState('idle')
@@ -43,6 +49,9 @@ export function ChatPanel({ documentId, documentReady }: ChatPanelProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!canAsk || !documentId) return
+
+    const token = ++requestTokenRef.current
+    const isStale = () => requestTokenRef.current !== token
 
     const trimmed = query.trim()
     const userMsg: ChatMessage = {
@@ -57,6 +66,7 @@ export function ChatPanel({ documentId, documentReady }: ChatPanelProps) {
 
     try {
       const res = await askQuestion(documentId, trimmed)
+      if (isStale()) return
       const isNoAnswer =
         !res.answer ||
         SEMANTIC_NO_ANSWER_STATUSES.has(res.context_status)
@@ -74,6 +84,7 @@ export function ChatPanel({ documentId, documentReady }: ChatPanelProps) {
       }
       setMessages((prev) => [...prev, assistantMsg])
     } catch (err) {
+      if (isStale()) return
       const message =
         err instanceof ApiError
           ? err.code === 'NETWORK_ERROR' || err.status === 0
@@ -86,8 +97,9 @@ export function ChatPanel({ documentId, documentReady }: ChatPanelProps) {
       setAskState('error')
       return
     } finally {
-      setAskState('asking')
-      setAskState('idle')
+      if (!isStale()) {
+        setAskState('idle')
+      }
     }
   }
 
