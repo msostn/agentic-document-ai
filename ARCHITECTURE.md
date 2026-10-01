@@ -862,3 +862,171 @@ phase's own non-goals.
 - The runtime metrics endpoint is still in-process and resets on restart.
 - The 500 path adds one log record per failure with a full traceback; that is
   server-side only and bounded by the failure rate.
+
+---
+
+## 17. Phase 17 - Release Candidate, CI/CD & Final Production Readiness
+
+### 17.1 Scope
+
+Phase 17 changed no application module, no retrieval behaviour, no endpoint and
+no RAG/agent parameter. It made the result reproducible and verifiable:
+dependency pins, one release-verification command, a CI workflow, dependency
+and security audits, and documentation of the decisions a new maintainer needs.
+The frozen baseline from Phase 16 was re-run after every change: 76 pytest
+tests, 11 regression suites / 267 checks, 43 frontend tests, 21/21 golden
+evaluation (100/100/100), 24/24 end-to-end checks.
+
+### 17.2 Dependency reproducibility
+
+**Decision: pin every direct runtime dependency, and align every environment on
+those pins.** The repository had two live interpreters with *different*
+versions of the same libraries (system Python 3.13.7 and `backend/.venv`), and
+`requirements.txt` was unpinned, so a fresh install could silently pull a
+different numerical stack and change embeddings.
+
+- **Which versions to pin:** the `backend/.venv` versions, because that is the
+  environment the running server, the evaluation, the E2E probes and the Docker
+  runs all used. Every pin was then diffed against `pip list` in that venv: all
+  twelve match exactly (`torch==2.14.0` is satisfied by the installed
+  `2.14.0+cpu` wheel, which PEP 440 `==` comparison accepts without the local
+  segment).
+- **Python version:** `python:3.11-slim` could not take these pins —
+  `numpy==2.5.3` and `scipy>=1.18` require Python >= 3.12. The image, CI and
+  the docs therefore say **Python 3.12+ (verified on 3.13)**, and both the
+  Dockerfile and CI use 3.13.
+- **torch:** installed from the CPU wheel index *before* `requirements.txt`
+  (`torch==2.14.0` is then already satisfied, so pip never replaces it with a
+  CUDA build). The same two lines appear in `backend/Dockerfile` and CI, so the
+  image and CI install exactly what the host runs.
+- **Node:** the frontend toolchain requires `^20.19 || ^22.12 || >=24`, so the
+  documented prerequisite is Node 22+ (README said 18+, which would not
+  install) and CI uses Node 22.
+- **pytest** stays out of the runtime requirements (`requirements-dev.txt`,
+  pinned to 9.1.1) so the image keeps exactly `app/`, `requirements.txt` and
+  the Dockerfile.
+
+Rejected: pinning to the system-Python versions (a second, equally arbitrary
+set that the server does not run), and leaving `requirements.txt` unpinned
+(the status quo, i.e. no reproducibility at all).
+
+### 17.3 CI decisions
+
+`.github/workflows/ci.yml` is deliberately **lightweight and deterministic**:
+it runs the stages that need no services (syntax, import validation,
+`pytest -m "not integration" --strict-markers`, the chunking and
+deployment-contract drivers, frontend lint/tests/build) and nothing else. A
+GitHub-hosted runner cannot supply Supabase PostgreSQL and Ollama, so the live
+gates (`run_all_regressions.py`, the E2E probe, the evaluation) are *not*
+faked in CI with `continue-on-error`, `|| true` or retries — a fake gate is
+worse than an absent one. Those gates run through
+`scripts/verify_release.py` on a machine that has the services.
+
+### 17.4 Release verification command
+
+`scripts/verify_release.py` (repository root) runs twelve stages as separate
+child processes and stops at the first non-zero exit, naming that stage in a
+summary table and exiting non-zero itself:
+
+1. backend syntax check (`compileall app scripts`)
+2. backend import validation
+3. pytest (full suite; `-m "not integration" --strict-markers` with `--offline`)
+4. `scripts/test_chunker.py` (17 checks)
+5. `scripts/test_phase13_deployment.py` (19 checks)
+6. `scripts/run_all_regressions.py` (11 suites / 267 checks) - needs database + Ollama
+7-9. frontend `lint`, `test`, `build`
+10. `backend/scripts/api_contract_probe.py` - 27 contract and security checks
+11. `backend/scripts/e2e_smoke.py` - 24 end-to-end checks
+12. `backend/evaluate.py`, **plus** a gate read from the JSON report it wrote
+    (21/21 cases, failed=0, retrieval/citation/rejection all 100%)
+
+`--offline` runs stages 1-5 and 7-9 only and prints every live stage as
+`NOT RUN`, never as passed; it is the local equivalent of the CI workflow. The
+evaluation stage additionally re-reads `eval/reports/*.json` so a harness that
+prints `21/21` but writes a report with a failed case still fails the gate.
+`npm` is resolved through `shutil.which` because `subprocess` cannot execute
+`npm.CMD` by bare name on Windows (a defect found while building this).
+
+Two new checked-in probes back stages 10-11: `backend/scripts/api_contract_probe.py`
+(Phase 16's 26-check probe plus an explicit "undocumented CORS origin is
+refused" check) and `backend/scripts/e2e_smoke.py` (Phase 16's 24-check local
+probe, parameterised with `--base-url` so the identical run can be pointed at
+a native server or a container).
+
+### 17.5 Security, contract and artifact decisions
+
+- **No authentication, still.** The spec asks for the decision to be
+  documented rather than implemented: this is a local/demo deployment, and
+  adding auth would change the API contract and the frontend. `README.md` and
+  `DEPLOYMENT.md` both state the consequence (anyone with a document ID can
+  query it) and say not to expose it publicly.
+- **API contract frozen.** No endpoint, method, path, status code or payload
+  was added, renamed or removed. The known `POST /documents` (spec) vs
+  `POST /documents/upload` (implementation) discrepancy stays as documented in
+  Phase 16; renaming a live route during a release-candidate phase is exactly
+  the kind of change that breaks clients.
+- **Eval artifact policy: frozen history + ignored future artifacts.**
+  `eval/reports/*.json|md` stay in the repository for the four reports already
+  tracked as evidence, and `.gitignore` gains `eval/reports/*` so future runs
+  stop growing the diff. Golden sets (`eval/golden_sets/*.json`) remain
+  version-controlled - they are the specification of the gate.
+- **`.env.example` no longer lists `EVAL_GOLDEN_SET_DIR`/`EVAL_REPORT_DIR` as
+  if they had cwd-relative defaults.** `Settings` computes absolute paths from
+  the package location, so a copied `.env` with `../eval/...` depended on
+  where the process was started; the file now documents them as optional
+  overrides with a comment. No test asserted those two lines.
+- **Secrets:** a repository-wide scan found no committed credentials;
+  `backend/.env` is ignored by both `.gitignore` and `.dockerignore`, and
+  `git check-ignore` confirms `.env`, `frontend/dist`, `frontend/node_modules`
+  and `backend/.venv` are all ignored.
+
+### 17.6 Verification results
+
+| Gate | Result |
+|------|--------|
+| `pytest` (backend, pinned venv) | 76 passed, 0 failed, 0 collection errors |
+| `scripts/run_all_regressions.py` | 11 suites, 267 checks, 0 failed |
+| frontend `lint` | 0 errors (2 warnings), exit 0 |
+| frontend `test` | 43 passed (8 files) |
+| frontend `build` | pass |
+| `api_contract_probe.py` | 27 / 27 (native **and** container) |
+| `e2e_smoke.py` | 24 / 24 (native **and** container) |
+| `evaluate.py` release gate | 21/21, retrieval 100%, citation 100%, rejection 100% (native **and** container) |
+| Docker | `compose build`, `up`, `/health`, `/health/ready`, frontend 200, image runs as `appuser`, image contains no `.env`/`tests`/`scripts`/`evaluate.py`, `down` |
+| CI workflow | validated by reproducing every step locally in a fresh venv with CI's exact environment (no `.env`, placeholder `DATABASE_URL`, Python 3.13) |
+
+### 17.7 Performance re-measurement (spec 27)
+
+| Stage | Phase 16 reference | Phase 17 measurement |
+|-------|--------------------|----------------------|
+| ingestion (1500-word PDF, synchronous) | not recorded | ~0.9 s upload-to-`ready` |
+| retrieval (+ query embedding) | ~11 ms | ~86-103 ms per `/ask` |
+| generation | ~789 ms | ~4.6-6.3 s per answerable `/ask` |
+| total `/ask` latency | ~1924 ms | ~5.9-6.8 s answerable; ~0.21 s rejected |
+
+No application code changed, so this is not a code regression, and per spec
+section 27 nothing was optimised. Two causes were measured rather than assumed:
+
+1. **Retrieval** is CPU-bound (in-process sentence-transformers embed on
+   `cpu`) and the host was at ~63% CPU with ~2 GB free during measurement, so
+   the 8x delta tracks machine load, not query cost; the absolute number stays
+   under 0.1 s.
+2. **Generation** throughput is unchanged: a direct `/api/chat` call measured
+   ~53 tok/s on the same `qwen3:4b` (RTX 3050, model fully in VRAM). The delta
+   is *token count* - current runs emit ~250-330 tokens per answer (the model's
+   reasoning chain plus the answer), where the reference implies ~40. Reasoning
+   length for a thinking model varies with the prompt and sampling; nothing in
+   the prompt or the Ollama version changed (the server has been running
+   0.34.4 since 28 Sep).
+
+Recorded, classified as environment/measurement variance, and left alone -
+a performance change requires a measured bottleneck and a full regression.
+
+### 17.8 What remains intentionally out of scope
+
+Authentication, chat persistence, multi-document QA, asynchronous ingestion,
+observability beyond the existing `/metrics/runtime` and `query_event` logs,
+rerankers, cloud LLM fallback, Alembic, dependency upgrades beyond the pins,
+version tagging (`v1.0.0`/`v0.9.0` only after every gate passes and a human
+decides). None of them is needed to make the existing system harder to break,
+and the spec asks for them to be *documented as not done*, not silently added.

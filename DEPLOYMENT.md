@@ -149,11 +149,16 @@ If you prefer to run without Docker:
 
 ### Backend
 
+Python **3.12+** (the pinned requirements need numpy ≥ 2.5 / scipy ≥ 1.18;
+the project is verified on 3.13, which is also what CI and the Docker image
+use).
+
 ```bash
 cd backend
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 pip install -r requirements.txt
+pip install -r requirements-dev.txt   # once, for the test suite
 cp .env.example .env          # edit with your DATABASE_URL
 
 # Ensure OLLAMA_BASE_URL=http://localhost:11434 in .env
@@ -162,6 +167,8 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### Frontend
+
+Node.js **22+** (the toolchain requires `^20.19 || ^22.12 || >=24`; CI uses 22).
 
 ```bash
 cd frontend
@@ -203,14 +210,22 @@ The readiness endpoint checks:
 | `AGENT_MAX_TOOL_CALLS` | `3` | Hard cap on tool calls per `/ask` (validated 1–3) |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformers model |
 | `EMBEDDING_BATCH_SIZE` | `32` | Texts embedded per batch |
+| `EMBEDDING_DEVICE` | `cpu` | Device used for embedding |
 | `MAX_UPLOAD_SIZE_MB` | `25` | Maximum upload size in MB |
 | `CHUNK_SIZE` | `500` | Max characters per chunk (Phase 15 baseline) |
 | `CHUNK_OVERLAP` | `100` | Word-based overlap carried into the next chunk |
+| `MIN_CHUNK_SIZE` | `100` | Chunks shorter than this are merged into their predecessor |
+| `MAX_QUERY_LENGTH` | `8000` | Character cap on `/ask` and `/search` queries |
 | `RETRIEVAL_TOP_K_DEFAULT` / `_MAX` | `5` / `20` | Chunks returned by `/search` |
 | `RAG_MIN_SIMILARITY` | `0.30` | Cosine floor for `/ask` context |
+| `RAG_CONTEXT_MAX_CHARS` | `8000` | Character budget for the context handed to the model |
 | `ALLOWED_ORIGINS` | `http://localhost:5173` | CORS allowed origins (comma-separated) |
 | `ENVIRONMENT` | `development` | Environment name |
 | `LOG_LEVEL` | `INFO` | Python logging level |
+| `ENABLE_METRICS_ENDPOINT` | `true` | Serve `GET /metrics/runtime` |
+| `ENABLE_REQUEST_LOGGING` | `true` | Emit per-stage/request `query_event` log lines |
+| `EVAL_GOLDEN_SET_DIR` | `<repo>/eval/golden_sets` | Golden datasets read by `evaluate.py` (absolute default; override only to point elsewhere) |
+| `EVAL_REPORT_DIR` | `<repo>/eval/reports` | Reports written by `evaluate.py` (absolute default) |
 
 Every value above is validated when the settings object is built: a bad
 chunking relationship, a `top_k` maximum below its default, an agent bound
@@ -231,17 +246,23 @@ process at startup instead of failing later per request. Copy
 
 ### Backend container
 
-- Base image: `python:3.11-slim`
+- Base image: `python:3.13-slim` (Phase 17: matches the interpreter the
+  project is pinned and verified on; `requirements.txt` is fully pinned, and
+  torch is installed from the CPU wheel index first so the image never pulls a
+  CUDA build)
 - Runs as non-root user (`appuser`, uid/gid 1000)
 - Exposes port 8000
 - Binds uvicorn to `0.0.0.0`
 - Reads configuration from environment variables
 - Reaches host Ollama via `http://host.docker.internal:11434`
 - Reaches Supabase via the configured `DATABASE_URL`
-- `.dockerignore` keeps `.env`, virtualenvs, bytecode caches, the test suite
-  (`tests/`, `pytest.ini`) and the phase regression scripts out of the image;
-  no model cache is baked in (the embedding model is fetched at first use into
-  the container's home cache)
+- Image contents are exactly `app/`, `requirements.txt` and the `Dockerfile`:
+  `.dockerignore` keeps `.env`, virtualenvs, bytecode caches, the test suite
+  (`tests/`, `pytest.ini`), the phase regression scripts (`scripts/`),
+  `requirements-dev.txt` and `evaluate.py` out of the image — no secrets, no
+  test tooling, no evaluation harness ships in the release artifact
+- No model cache is baked in (by design, unchanged since Phase 13): the
+  embedding model is fetched on first use into the container's home cache
 
 ### Frontend container
 
@@ -262,6 +283,63 @@ extra_hosts:
 ```
 
 This is already included in the provided `docker-compose.yml`.
+
+---
+
+## Release verification (Phase 17)
+
+Two entry points cover the release gate. Both exit non-zero on the first
+failure, name the stage that failed, and never retry to mask flakiness.
+
+### Against a running backend (native)
+
+```bash
+python scripts/verify_release.py              # full gate
+python scripts/verify_release.py --offline    # deterministic stages only (CI subset)
+```
+
+The full gate runs: syntax check → import validation → pytest → chunking
+driver → deployment-contract driver → `scripts/run_all_regressions.py` →
+frontend lint/tests/build → `scripts/api_contract_probe.py` (27 contract and
+security checks) → `scripts/e2e_smoke.py` (24 end-to-end checks) →
+`backend/evaluate.py`, then verifies the evaluation report itself
+(21/21 cases, 100% retrieval hit-rate, 100% citation validity, 100% correct
+rejection). `--offline` stops before the live stages and prints them as
+NOT RUN rather than as passed.
+
+### Against the Docker deployment
+
+```bash
+# 1. build and start — ports 8000/5173 must be free (stop a native uvicorn first)
+docker compose build
+docker compose up -d
+
+# 2. health, readiness, frontend
+curl http://localhost:8000/health             # {"status":"ok"}
+curl http://localhost:8000/health/ready       # {"status":"ok","checks":{"database":"ok","ollama":"ok"}}
+curl -I http://localhost:5173                 # 200, nginx serves the built SPA
+
+# 3. the live gates, pointed at the container
+python backend/scripts/api_contract_probe.py --base-url http://localhost:8000
+python backend/scripts/e2e_smoke.py          --base-url http://localhost:8000
+python backend/evaluate.py                   --base-url http://localhost:8000
+
+# 4. the release image must be non-root and must not ship secrets or test tooling
+docker run --rm --entrypoint id agentic-document-ai-backend:latest   # uid=1000(appuser)
+docker run --rm --entrypoint ls agentic-document-ai-backend:latest /app
+#   -> Dockerfile  app  requirements.txt      (no .env, tests/, scripts/, evaluate.py)
+
+# 5. tear down
+docker compose down
+```
+
+**Cold start:** the image bakes no model cache (unchanged from Phase 13), so
+the *first* ingestion in a fresh container downloads the embedding model
+(~80 MB) into the container layer before chunks can be embedded. That download
+can take minutes on a slow connection and exceed the E2E probe's client
+timeout — the download continues server-side, so warm the container once
+(upload any PDF, wait for `status: ready`) and then run step 3. Later uploads
+are unaffected because the model stays in the container layer.
 
 ---
 

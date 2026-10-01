@@ -1,11 +1,29 @@
-fastapi
-uvicorn[standard]
-pydantic-settings
-sqlalchemy
-psycopg[binary]
-pgvector
-pymupdf
-python-multipart
-sentence-transformers
-numpy
-httpx
+# Runtime dependencies — pinned (Phase 17).
+#
+# Every pin is a version actually verified by this project:
+#   * the live backend (evaluation, E2E and Docker runs) runs in an
+#     environment with exactly these versions,
+#   * `python:3.13-slim` (backend/Dockerfile) installs exactly this set,
+#   * CI installs exactly this set on Python 3.13.
+# Pins freeze the retrieval-relevant numerical stack (numpy/torch) so a
+# fresh install cannot silently change embedding or retrieval behaviour.
+#
+# Python requirement: 3.12+ (numpy>=2.5 and scipy>=1.18 require it);
+# the project is verified on 3.13.
+#
+# torch is listed explicitly because it is a direct runtime dependency of
+# the embedding path. Install the CPU build first (see backend/Dockerfile
+# and CI); `torch==2.14.0` is satisfied by the `2.14.0+cpu` wheel, so the
+# pre-installed CPU wheel is never replaced by a CUDA build.
+torch==2.14.0
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+pydantic-settings==2.15.0
+sqlalchemy==2.0.54
+psycopg[binary]==3.3.5
+pgvector==0.5.0
+pymupdf==1.28.2
+python-multipart==0.0.32
+sentence-transformers==6.0.1
+numpy==2.5.3
+httpx==0.28.1

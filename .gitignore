@@ -33,6 +33,13 @@ npm-debug.log*
 .coverage
 htmlcov/
 
+# Evaluation reports are generated artifacts (Phase 17 policy): every
+# `python evaluate.py` run writes a new timestamped report, and timestamped
+# runs are not committed. Golden datasets under eval/golden_sets/ stay
+# version-controlled; reports tracked before Phase 17 remain tracked as
+# historical evidence.
+eval/reports/*
+
 # Editors / OS
 .idea/
 .vscode/

@@ -17,6 +17,10 @@ build
 
 # Phase 16: the runtime image only needs the application. The test suite and
 # the phase regression scripts are build-context noise, not runtime assets.
+# Phase 17: no test/evaluation/regression tooling ships in the image at all —
+# release verification runs from the host against the container's HTTP API.
 tests
 pytest.ini
-scripts/test_*.py
+scripts
+requirements-dev.txt
+evaluate.py

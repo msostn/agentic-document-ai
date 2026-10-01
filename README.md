@@ -2,6 +2,16 @@
 
 A general-purpose Agentic RAG application. Users upload PDFs, retrieve relevant sections with vector search, and ask an LLM questions grounded in that document only.
 
+It is *agentic* rather than a plain RAG call because answering is a bounded
+tool-calling loop: retrieval always happens first (mandatory first search), the
+model may then call `search_document` up to 3 times (3 iterations max), and the
+backend — not the model — decides which sources are returned and whether there
+was enough evidence to answer at all.
+
+**Stack:** React + Vite + TypeScript · FastAPI + SQLAlchemy + PostgreSQL/pgvector ·
+`sentence-transformers all-MiniLM-L6-v2` (CPU embeddings) · Ollama `qwen3:4b`
+(local LLM) · pytest + Vitest · Docker Compose · GitHub Actions CI.
+
 ## Architecture
 
 ```
@@ -24,8 +34,10 @@ Phase 12 adds the React frontend and browser integration. The core RAG/agent log
 
 ## Prerequisites
 
-- Python 3.11+ (for native development)
-- Node.js 18+ (for native development)
+- Python 3.12+ for native development (pinned requirements need numpy ≥ 2.5 /
+  scipy ≥ 1.18; verified on 3.13, which is also what CI and the Docker image use)
+- Node.js 22+ for native development (the frontend toolchain requires
+  `^20.19 || ^22.12 || >=24`; CI uses 22)
 - [Ollama](https://ollama.com/) installed and running
 - Supabase PostgreSQL (free tier) or local PostgreSQL with pgvector
 - Docker Desktop (for Docker deployment)
@@ -243,7 +255,8 @@ individually:
 ```bash
 cd backend
 
-# Unit + integration tests (pytest.ini restricts bare `pytest` to backend/tests)
+# Unit + integration tests (pytest.ini restricts bare `pytest` to the test suite,
+# from backend/ or from the repository root)
 python -m pytest
 
 # Phase 1–15 regression drivers (each prints "N checks, N passed, 0 failed")
@@ -276,6 +289,57 @@ npm test
 cd frontend
 npm run build
 ```
+
+## Release verification (Phase 17)
+
+```bash
+python scripts/verify_release.py              # full release gate
+python scripts/verify_release.py --offline    # deterministic stages only (what CI runs)
+```
+
+Each stage is a separate process; the script stops at the first failure, names
+it in the summary, and exits non-zero — nothing is retried or swallowed. The
+full gate runs: syntax → imports → pytest → chunking driver → deployment
+driver → `scripts/run_all_regressions.py` → frontend lint/test/build →
+`backend/scripts/api_contract_probe.py` (27 contract and security checks) →
+`backend/scripts/e2e_smoke.py` (24 end-to-end checks) → `backend/evaluate.py`
+plus a gate on its JSON report (21/21 cases, 100% retrieval hit-rate, 100%
+citation validity, 100% correct rejection). The Docker procedure
+(build → up → the same probes against the container → image-content checks →
+down) is in [DEPLOYMENT.md](DEPLOYMENT.md#release-verification-phase-17).
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `master` and every pull
+request:
+
+- **Backend** (Python 3.13): pinned `requirements.txt` install (CPU torch
+  wheel first), `python -m compileall`, import validation,
+  `pytest -m "not integration" --strict-markers`, `scripts/test_chunker.py`,
+  `scripts/test_phase13_deployment.py`
+- **Frontend** (Node 22): `npm ci`, `npm run lint`, `npm test`, `npm run build`
+
+There is no `continue-on-error`, no `|| true` and no retry loop: a red gate
+fails the job. The live-service gates (regression drivers, E2E probe,
+evaluation) need the database and Ollama, so they run through
+`scripts/verify_release.py` rather than in CI.
+
+## Final results (Phase 17)
+
+| Gate | Result |
+|------|--------|
+| Backend pytest | 76 passed, 0 failed, 0 collection errors |
+| Regression suite (Phase 1–16) | 11 suites, 267 checks, 0 failed |
+| Frontend lint / tests / build | 0 errors · 43 passed · pass |
+| Golden evaluation | 21/21 · retrieval 100% · citation validity 100% · correct rejection 100% |
+| Cross-document isolation | pass (pytest integration test + E2E isolation checks) |
+| API contract & security probe | 27/27 (native **and** container) |
+| End-to-end smoke probe | 24/24 (native **and** container) |
+| Docker | build → up → `/health` + `/health/ready` 200 → frontend 200 → image checks (non-root, no `.env`/tests/scripts) → down |
+| CI workflow | deterministic stages reproduced locally in a fresh Python 3.13 venv |
+| Secret scan / `git diff --check` | no secrets in tracked files · clean |
+
+Full evidence: `docs/phases/PHASE_17_RELEASE_READINESS.md`.
 
 ## Known Limitations
 
@@ -323,8 +387,8 @@ npm run build
 | `RAG_CONTEXT_MAX_CHARS` | `8000` | Character budget for the context handed to the model |
 | `ENABLE_METRICS_ENDPOINT` | `true` | Serve `GET /metrics/runtime` |
 | `ENABLE_REQUEST_LOGGING` | `true` | Emit per-stage/request `query_event` log lines |
-| `EVAL_GOLDEN_SET_DIR` | `../eval/golden_sets` | Golden datasets read by `evaluate.py` |
-| `EVAL_REPORT_DIR` | `../eval/reports` | Reports written by `evaluate.py` |
+| `EVAL_GOLDEN_SET_DIR` | `<repo>/eval/golden_sets` | Golden datasets read by `evaluate.py` (absolute default; override only to point elsewhere) |
+| `EVAL_REPORT_DIR` | `<repo>/eval/reports` | Reports written by `evaluate.py` (absolute default) |
 
 ### Frontend (`frontend/.env`)
 
